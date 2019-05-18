@@ -23,7 +23,7 @@ args = parser.parse_args()
 
 
 def launcher():
-    os.environ['NCLUSTER_AWS_FAST_ROOTDISK']='1' # request disk with lots of IOPS on AWS
+    os.environ['NCLUSTER_AWS_FAST_ROOTDISK'] = '1' # request disk with lots of IOPS on AWS
     job = ncluster.make_job(**vars(args))
 
     job.rsync('.')
