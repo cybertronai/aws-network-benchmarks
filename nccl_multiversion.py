@@ -66,7 +66,7 @@ def launcher():
                           non_blocking=True)
         job.task[0].write('build_ok', '0')
     else:
-        print("~/is_initialized found, skipping setup")
+        print("~/build_ok found, skipping setup")
 
 
     
