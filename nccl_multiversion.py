@@ -13,7 +13,7 @@ parser.add_argument('--num_tasks', type=int, default=2, help="number of nodes")
 parser.add_argument('--spot', action='store_true', help='use spot instances')
 parser.add_argument('--skip_setup', action='store_true',
                     help='can use this option on reruns for slightly faster turn-around')
-parser.add_argument('--image_name', type=str, default='Deep Learning AMI (Ubuntu) Version 22.0')
+parser.add_argument('--image_name', type=str, default='Deep Learning AMI (Ubuntu) Version 23.0')
 
 
 parser.add_argument('--role', type=str, default='launcher')
