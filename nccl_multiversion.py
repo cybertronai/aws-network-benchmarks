@@ -16,8 +16,6 @@ parser.add_argument('--skip_setup', action='store_true',
 parser.add_argument('--image_name', type=str, default='Deep Learning AMI (Ubuntu) Version 22.0')
 
 
-# TODO(y) (not needed?) pytorch 1.0.1/2.3.7+cuda10.0
-parser.add_argument('--conda_env', type=str, default='pytorch_p36')
 parser.add_argument('--role', type=str, default='launcher')
 parser.add_argument('--nproc_per_node', type=int, default=0, help='number of processes to launch, if not specified, set automatically from number of gpus on instance')
 
