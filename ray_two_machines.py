@@ -153,9 +153,7 @@ def run_launcher():
   if args.local:
       ncluster.set_backend('local')
 
-  print('hi-1')
   job = ncluster.make_job(**vars(args))
-  print('hi0')
   job.run(install_script)
   
   ps, worker = job.tasks
