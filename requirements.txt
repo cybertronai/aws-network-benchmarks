@@ -1,3 +1,5 @@
+ray
+numpy
 ncluster
 
 # ncluster subdependencies
