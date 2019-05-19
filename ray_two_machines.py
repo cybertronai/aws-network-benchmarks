@@ -144,7 +144,6 @@ def run_launcher():
   import ncluster
 
   if args.nightly:
-    # running locally MacOS
     install_script = 'pip install --no-cache-dir -U ray --find-links ' \
                      'https://s3-us-west-2.amazonaws.com/ray-wheels/latest/'
   else:
