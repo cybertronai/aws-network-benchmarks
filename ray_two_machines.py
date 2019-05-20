@@ -106,6 +106,7 @@ parser.add_argument("--role", default='launcher', type=str,
 parser.add_argument("--ip", default='', type=str,
                     help="internal flag, used to point worker to head node")
 args = parser.parse_args()
+assert args.num_tasks == 2
 
 dim = args.size_mb * 250 * 1000
 
@@ -118,8 +119,7 @@ class Worker(object):
   def compute_gradients(self):
     return self.gradients
 
-  @staticmethod
-  def ip():
+  def ip(self):
     return ray.services.get_node_ip_address()
 
 
@@ -135,8 +135,7 @@ class ParameterServer(object):
   def get_weights(self):
     return self.params
 
-  @staticmethod
-  def ip():
+  def ip(self):
     return ray.services.get_node_ip_address()
 
 
@@ -157,15 +156,13 @@ def run_launcher():
   
   ps, worker = job.tasks
   if not ncluster.running_locally():
-    ps.run('killall python || echo ok')
-    worker.run('killall python || echo ok')
+    ps.run('killall python | echo no python found')
+    worker.run('killall | echo no python found')
+    job.run('ray stop')
   
   job.upload(__file__)
   job.upload('util.py')
   
-  # Line below crashes Python interpreter in --local, stop ray manually
-  #  job.run('ray stop')
-
   # https://ray.readthedocs.io/en/latest/resources.html?highlight=resources
   ps_resource = """--resources='{"ps": 1}'"""
   worker_resource = """--resources='{"worker": 1}'"""
