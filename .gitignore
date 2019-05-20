@@ -6,3 +6,5 @@
 /.idea/aws-network-benchmarks.iml
 inspectionProfiles
 __pycache__
+/.idea/codeStyles
+/.DS_Store
