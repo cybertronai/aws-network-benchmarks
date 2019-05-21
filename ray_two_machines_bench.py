@@ -8,6 +8,9 @@
 #
 # Run on AWS:
 # ./ray_two_machines.py
+#
+# AWS p3dn results:
+# python ray_two_machines.py
 # 000/21 sent 1074 MBs in 157.5 ms: 6815.96 MB/second
 # 001/21 sent 1074 MBs in 1060.6 ms: 1012.42 MB/second
 # 002/21 sent 1074 MBs in 740.6 ms: 1449.75 MB/second
@@ -31,7 +34,8 @@
 # 020/21 sent 1074 MBs in 139.1 ms: 7716.91 MB/second
 # Gbps: mean:    21.06, median:    45.77, max:    85.86
 #
-# Local on MacBook Pro:
+# Local MacBook Pro results:
+# ray stop; python ray_two_machines_bench.py --local --hidden_size=500
 # 000/21 sent 16 MBs in 9.9 ms: 1623.43 MB/second
 # 001/21 sent 16 MBs in 43.9 ms: 364.31 MB/second
 # 002/21 sent 16 MBs in 46.7 ms: 342.82 MB/second
