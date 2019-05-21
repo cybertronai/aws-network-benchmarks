@@ -39,7 +39,7 @@ Current: 91-93 Gbps with 8 processes/10 connections each
 ## PyTorch/nccl
 
 ```
-python pytorch_bench.py
+python pytorch_bench.py --role=launcher
 ```
 
 Issues
