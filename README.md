@@ -54,7 +54,7 @@ Current:
 ```
 python ray_two_machines_bench.py
 ```
-Current: 11.9 Gbps
+Current: 45.5 Gbps
 
 Issues:
 - https://github.com/ray-project/ray/issues/1325
