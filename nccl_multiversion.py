@@ -20,7 +20,7 @@ parser.add_argument('--do_efa', type=int, default=1)
 parser.add_argument('--do_efa_hack', type=int, default=0)
 parser.add_argument('--role', type=str, default='launcher')
 parser.add_argument('--nproc_per_node', type=int, default=0, help='number of processes to launch, if not specified, set automatically from number of gpus on instance')
-parser.add_argument('--total_gpus', type=int, default=0, help='number of processes to launch, if not specified, set automatically from number of gpus on instance')
+parser.add_argument('--num_gpus', type=int, default=0, help='number of processes to launch, if not specified, set automatically from number of gpus on instance')
 
 args = parser.parse_args()
 
@@ -88,20 +88,21 @@ def launcher():
     np = args.nproc_per_node
 
     # https://github.com/NVIDIA/nccl-tests/issues/21
-    cmd = (f'{MPI_HOME}/bin/mpirun --host {host_str} -np {np} '
+    cmd = (f'{MPI_HOME}/bin/mpirun --host {host_str} -np {args.num_gpus} '
+           f'-N 8 '
            f'-mca btl ^openib ' # get rid of no infiniband warning '
            f'-mca oob_tcp_if_include ens5 -mca btl_tcp_if_include ens5 ' # force ens5
            f'-mca orte_base_help_aggregate 0 '   # more logging messages
            f'-x LD_LIBRARY_PATH=~/nccl/nccl-{tag}/nccl/build/lib:$LD_LIBRARY_PATH '
            f'-oversubscribe ' # for "There are not enough slots" error
-           f'~/nccl/nccl-{tag}/nccl-tests/build/all_reduce_perf -b 1280M -e 1280M -f 2 -g {np} ')
+           f'~/nccl/nccl-{tag}/nccl-tests/build/all_reduce_perf -b 1280M -e 1280M -f 2 ')
 
     
     ofi_path=f"~/nccl/nccl-{tag}/aws-ofi-nccl/install/lib/"
     nccl_path=f"~/nccl/nccl-{tag}/nccl/build/lib"
 
     # https://github.com/NVIDIA/nccl-tests/issues/21
-    cmd_efa_hack = (f'{MPI_HOME}/bin/mpirun --host {host_str} -np {args.total_gpus} '
+    cmd_efa_hack = (f'{MPI_HOME}/bin/mpirun --host {host_str} -np {args.num_gpus} '
            f'-mca btl ^openib ' # get rid of no infiniband warning '
            f'-mca orte_base_help_aggregate 0 '   # more logging messages
            f'-x LD_LIBRARY_PATH=~/nccl/nccl-{tag}/nccl/build/lib:$LD_LIBRARY_PATH '
