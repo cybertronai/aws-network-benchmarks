@@ -15,15 +15,18 @@ parser.add_argument('--skip_setup', action='store_true',
                     help='can use this option on reruns for slightly faster turn-around')
 parser.add_argument('--image_name', type=str, default='Deep Learning AMI (Ubuntu) Version 23.0')
 
-
+parser.add_argument('--force_rebuild', type=int, default=0)
+parser.add_argument('--do_efa', type=int, default=1)
+parser.add_argument('--do_efa_hack', type=int, default=0)
 parser.add_argument('--role', type=str, default='launcher')
 parser.add_argument('--nproc_per_node', type=int, default=0, help='number of processes to launch, if not specified, set automatically from number of gpus on instance')
+parser.add_argument('--total_gpus', type=int, default=0, help='number of processes to launch, if not specified, set automatically from number of gpus on instance')
 
 args = parser.parse_args()
 
 
 def launcher():
-    os.environ['NCLUSTER_AWS_FAST_ROOTDISK'] = '1' # request disk with lots of IOPS on AWS
+    #    os.environ['NCLUSTER_AWS_FAST_ROOTDISK'] = '1' # request disk with lots of IOPS on AWS
     job = ncluster.make_job(**vars(args))
 
     if not args.nproc_per_node:
@@ -33,7 +36,7 @@ def launcher():
     job.run('export NCCL_MIN_NRINGS=16')
     job.rsync('.')
 
-    if not job.tasks[0].exists('build_ok'):
+    if not job.tasks[0].exists('build_ok') or args.force_rebuild:
         def nccl_build(tag, gitcmd):
             job.run(f'export NCCL_VERSION_TAG="{tag}"')
             job.run(f'export GIT_CHECKOUT_CMD="{gitcmd}"')
@@ -64,7 +67,7 @@ def launcher():
                 # task1 ->ssh-> task2
                 task2.run(f'echo "{public_keys[task1]}" >> ~/.ssh/authorized_keys',
                           non_blocking=True)
-        job.task[0].write('build_ok', '0')
+        job.tasks[0].write('build_ok', '0')
     else:
         print("~/build_ok found, skipping setup")
 
@@ -84,14 +87,53 @@ def launcher():
     tag = '2.4.7ms0'
     np = args.nproc_per_node
 
-    task0.run(f'{MPI_HOME}/bin/mpirun --host {host_str} -np {np} '
-              f'-mca btl ^openib ' # get rid of no infiniband warning '
-              f'-mca oob_tcp_if_include ens5 -mca btl_tcp_if_include ens5 ' # force ens5
-              f'-mca orte_base_help_aggregate 0 '   # more logging messages
-              f'-x LD_LIBRARY_PATH=~/nccl/nccl-{tag}/nccl/build/lib:$LD_LIBRARY_PATH '
-              f'-oversubscribe ' # for "There are not enough slots" error
-              f'~/nccl/nccl-{tag}/nccl-tests/build/all_reduce_perf -b 1280M -e 1280M -f 2 -g {np} '
-    )    # https://github.com/NVIDIA/nccl-tests/issues/21
+    # https://github.com/NVIDIA/nccl-tests/issues/21
+    cmd = (f'{MPI_HOME}/bin/mpirun --host {host_str} -np {np} '
+           f'-mca btl ^openib ' # get rid of no infiniband warning '
+           f'-mca oob_tcp_if_include ens5 -mca btl_tcp_if_include ens5 ' # force ens5
+           f'-mca orte_base_help_aggregate 0 '   # more logging messages
+           f'-x LD_LIBRARY_PATH=~/nccl/nccl-{tag}/nccl/build/lib:$LD_LIBRARY_PATH '
+           f'-oversubscribe ' # for "There are not enough slots" error
+           f'~/nccl/nccl-{tag}/nccl-tests/build/all_reduce_perf -b 1280M -e 1280M -f 2 -g {np} ')
+
+    
+    ofi_path=f"~/nccl/nccl-{tag}/aws-ofi-nccl/install/lib/"
+    nccl_path=f"~/nccl/nccl-{tag}/nccl/build/lib"
+
+    # https://github.com/NVIDIA/nccl-tests/issues/21
+    cmd_efa_hack = (f'{MPI_HOME}/bin/mpirun --host {host_str} -np {args.total_gpus} '
+           f'-mca btl ^openib ' # get rid of no infiniband warning '
+           f'-mca orte_base_help_aggregate 0 '   # more logging messages
+           f'-x LD_LIBRARY_PATH=~/nccl/nccl-{tag}/nccl/build/lib:$LD_LIBRARY_PATH '
+           f'-oversubscribe ' # for "There are not enough slots" error
+           f'~/nccl/nccl-{tag}/nccl-tests/build/all_reduce_perf -b 1280M -e 1280M -f 2 -g 1 ')
+
+    cmd_efa = (f'$HOME/anaconda3/bin/mpirun '
+               f'-x FI_PROVIDER="efa" '
+               f'-x FI_OFI_RXR_RX_COPY_UNEXP=1 '
+               f'-x FI_OFI_RXR_RX_COPY_OOO=1 '
+               f'-x FI_EFA_MR_CACHE_ENABLE=1 '
+               f'-x FI_OFI_RXR_INLINE_MR_ENABLE=1 '
+               f'-x LD_LIBRARY_PATH={ofi_path}:{nccl_path}:/usr/local/cuda-10.0/lib64:/opt/amazon/efa/lib64:$LD_LIBRARY_PATH '
+               f'-x NCCL_DEBUG=INFO -x '
+               f'NCCL_TREE_THRESHOLD=0 '
+               f'--host {host_str} '
+               f'-n 16 '
+               f'-N 8 '
+               f'-oversubscribe ' # for "There are not enough slots" error
+               '--mca btl tcp,self '
+               f'--mca btl_tcp_if_exclude lo,docker0 '
+               f'--bind-to none '
+               f'~/nccl/nccl-{tag}/nccl-tests/build/all_reduce_perf -b 8 -e 1G -f 2 -g 1 -c 1 -n 16')
+
+    # https://github.com/NVIDIA/nccl-tests/issues/21
+    if args.do_efa:
+        cmd = cmd_efa
+    elif args.do_efa_hack:
+        cmd = cmd_efa_hack
+    assert not (args.do_efa and args.do_efa_hack)
+    
+    task0.run(cmd)    
 
     print(task0.output)
 

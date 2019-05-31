@@ -92,4 +92,20 @@ fi
 
 make MPI=1 CUDA_HOME=/usr/local/cuda-10.0
 
+# install aws-ofi-nccl
+mkdir -p ~/nccl/aws-ofi-nccl-$NCCL_VERSION_TAG
+cd ~/nccl/aws-ofi-nccl-$NCCL_VERSION_TAG
+git clone https://github.com/aws/aws-ofi-nccl.git || echo exists
+cd aws-ofi-nccl
+make clean
+git apply aws_ofi_nccl.patch
+./autogen.sh
+mkdir install
+./configure --prefix=$HOME/aws-ofi-nccl/install --with-mpi=$HOME/anaconda3 \
+            --with-libfabric=/opt/amazon/efa \
+            --with-nccl=$NCCL_HOME \
+            --with-cuda=/usr/local/cuda-10.0
+
+make && make install
+
 popd
