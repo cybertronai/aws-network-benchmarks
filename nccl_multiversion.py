@@ -29,7 +29,6 @@ def launcher():
     #    os.environ['NCLUSTER_AWS_FAST_ROOTDISK'] = '1' # request disk with lots of IOPS on AWS
     job = ncluster.make_job(**vars(args))
 
-    MPI_HOME = "$HOME/anaconda3"
     if not args.nproc_per_node:
         args.nproc_per_node = job.tasks[0].num_gpus
         #    MPI_HOME='/usr/local/mpi'  # for DLAMI 22
@@ -37,22 +36,20 @@ def launcher():
     #    job.run('export NCCL_MIN_NRINGS=16')
     job.rsync('.')
 
-    if not job.tasks[0].exists('build_ok') or args.force_rebuild:
-        job.run(f'export NCCL_VERSION_TAG="{tag}"')
-        job.run(f'export GIT_CHECKOUT_CMD="{gitcmd}"')
-        def nccl_build(tag, gitcmd):
+    setup_completed_fn = 'setup_completed'
+    if not job.tasks[0].exists(setup_completed_fn) or args.force_rebuild:
+        def nccl_build(nccl_version_tag, gitcmd):
+            job.run(f'export NCCL_VERSION_TAG="{nccl_version_tag}"')
+            job.run(f'export GIT_CHECKOUT_CMD="{gitcmd}"')
             job.run(f'source ~/parameterized_nccl_build.sh')
 
             #        job.run(f"export MPI_HOME={MPI_HOME}")
         job.run("export NCCL_SOCKET_IFNAME=ens5") # TODO(y): remove because p3dn specific
 
-        should_nccl_build = True
-
-        if should_nccl_build:
-            #            nccl_build('2.3.7', "git checkout v2.3.7-1")
-            #            nccl_build('2.4.7ms0', "git checkout dev/kwen/multi-socket")
-            #            nccl_build('2.4.7', "git checkout v2.4.7-1")
-            nccl_build('2.4.6', "git checkout v2.4.6-1")
+        # nccl_build('2.3.7', "git checkout v2.3.7-1")
+        # nccl_build('2.4.7ms0', "git checkout dev/kwen/multi-socket")
+        # nccl_build('2.4.7', "git checkout v2.4.7-1")
+        nccl_build('2.4.6', "git checkout v2.4.6-1")
 
         # setup password-less SSH between all pairs of instances
         public_keys = {}
@@ -69,9 +66,9 @@ def launcher():
                 # task1 ->ssh-> task2
                 task2.run(f'echo "{public_keys[task1]}" >> ~/.ssh/authorized_keys',
                           non_blocking=True)
-        job.tasks[0].write('build_ok', '0')
+        job.tasks[0].write(setup_completed_fn, '0')
     else:
-        print("~/build_ok found, skipping setup")
+        print(f"{setup_completed_fn} found, skipping setup")
 
 
     
@@ -81,21 +78,19 @@ def launcher():
 
     task0 = job.tasks[0]
 
+    
     # sanity check, simple mpirun that will print hostnames
-    task0.run(f'{MPI_HOME}/bin/mpirun --host {host_str} hostname')
+    task0.run(f'{mpi_home}/bin/mpirun --host {host_str} hostname')
 
-    # TODO: dedup paths logic to nccl_multiversion
-    #    tag = '2.4.7'
-    #    tag = '2.3.7'
-    #    tag = '2.4.7ms0'
-    tag = '2.4.6'
-    folder_root = f"{task0.homedir}/nccl/nccl-{tag}"
-    job.run(f"export NCCL_VERSION_TAG={tag}")
-    job.run(f"export FOLDER_ROOT={folder_root}")
-    job.run(f"export NCCL_HOME={folder_root}/nccl/build")
-    job.run(f"export MPI_HOME=$HOME/anaconda3")
-    # CUDA_HOME is used for nccl:nccl-tests:aws-ofi, contains bin, lib, include
-    job.run("export CUDA_HOME=/usr/local/cuda-10.0")
+    #    nccl_version_tag = '2.4.7'
+    #    nccl_version_tag = '2.3.7'
+    #    nccl_version_tag = '2.4.7ms0'
+    NCCL_VERSION_TAG = '2.4.6'
+    FOLDER_ROOT = f"{task0.homedir}/nccl/nccl-{nccl_version_tag}"
+    MPI_HOME=f'{task0.homedir}/anaconda3'
+    CUDA_HOME=f'/usr/local/cuda-10.0'
+    NCCL_HOME=f'{folder_root}/nccl/build'
+    EFA_HOME=f'/opt/amazon/efa'
 
     np = args.nproc_per_node
 
@@ -105,19 +100,15 @@ def launcher():
            f'-mca btl ^openib ' # get rid of no infiniband warning '
            f'-mca oob_tcp_if_include ens5 -mca btl_tcp_if_include ens5 ' # force ens5
            f'-mca orte_base_help_aggregate 0 '   # more logging messages
-           f'-x LD_LIBRARY_PATH=~/nccl/nccl-{tag}/nccl/build/lib:$LD_LIBRARY_PATH '
+           f'-x LD_LIBRARY_PATH={NCCL_HOME}/lib:$LD_LIBRARY_PATH '
            f'-oversubscribe ' # for "There are not enough slots" error
            f'{folder_root}/nccl-tests/build/all_reduce_perf -b 1280M -e 1280M -f 2 ')
 
-    
-    ofi_path=f"~/aws-ofi-nccl/install/lib" # the install script copies libraries into tag-independent location
-    nccl_path=f"~/nccl/nccl-{tag}/nccl/build/lib"
-
-    cmd_efa = (f'$HOME/anaconda3/bin/mpirun '
+    cmd_efa = (f'{mpi_home}/bin/mpirun '
                f'-x FI_PROVIDER="efa" '
                f'-x FI_OFI_RXR_RX_COPY_UNEXP=1 -x FI_OFI_RXR_RX_COPY_OOO=1 '
                f'-x FI_EFA_MR_CACHE_ENABLE=1 -x FI_OFI_RXR_INLINE_MR_ENABLE=1 '
-               f'-x LD_LIBRARY_PATH=$HOME/nccl/nccl-$NCCL_VERSION_TAG/aws-ofi-nccl/install/lib/:$NCCL_HOME/lib:/usr/local/cuda-10.0/lib64:/opt/amazon/efa/lib64:$LD_LIBRARY_PATH '
+               f'-x LD_LIBRARY_PATH={folder_root}/aws-ofi-nccl/install/lib/:{nccl_home}/lib:{CUDA_HOME}/lib64:{EFA_HOME}/lib64:$LD_LIBRARY_PATH '
                f'-x NCCL_DEBUG=INFO -x NCCL_TREE_THRESHOLD=0 --host localhost -n 2 -N 2 '
                f'--mca btl tcp,self --mca btl_tcp_if_exclude lo,docker0 --bind-to none '
                f'--oversubscribe '
@@ -140,7 +131,7 @@ def launcher():
     #            '--mca btl tcp,self '
     #            f'--mca btl_tcp_if_exclude lo,docker0 '
     #            f'--bind-to none '
-    #            f'~/nccl/nccl-{tag}/nccl-tests/build/all_reduce_perf -b 8 -e 1G -f 2 -g 1 -c 1 -n 16')
+    #            f'~/nccl/nccl-{nccl_version_tag}/nccl-tests/build/all_reduce_perf -b 8 -e 1G -f 2 -g 1 -c 1 -n 16')
 
     # https://github.com/NVIDIA/nccl-tests/issues/21
     if args.do_efa:
