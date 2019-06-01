@@ -44,7 +44,7 @@ def launcher():
             job.run(f'source ~/parameterized_nccl_build.sh')
 
             #        job.run(f"export MPI_HOME={MPI_HOME}")
-        job.run("export NCCL_SOCKET_IFNAME=ens5") # TODO(y): remove because p3dn specific
+            #        job.run("export NCCL_SOCKET_IFNAME=ens5") # TODO(y): remove because p3dn specific
 
         # nccl_build('2.3.7', "git checkout v2.3.7-1")
         # nccl_build('2.4.7ms0', "git checkout dev/kwen/multi-socket")
@@ -79,18 +79,19 @@ def launcher():
     task0 = job.tasks[0]
 
     
-    # sanity check, simple mpirun that will print hostnames
-    task0.run(f'{mpi_home}/bin/mpirun --host {host_str} hostname')
-
     #    nccl_version_tag = '2.4.7'
     #    nccl_version_tag = '2.3.7'
     #    nccl_version_tag = '2.4.7ms0'
     NCCL_VERSION_TAG = '2.4.6'
-    FOLDER_ROOT = f"{task0.homedir}/nccl/nccl-{nccl_version_tag}"
-    MPI_HOME=f'{task0.homedir}/anaconda3'
+    FOLDER_ROOT = f"{task0.homedir}/nccl/nccl-{NCCL_VERSION_TAG}"
     CUDA_HOME=f'/usr/local/cuda-10.0'
-    NCCL_HOME=f'{folder_root}/nccl/build'
+    MPI_HOME=f'{task0.homedir}/anaconda3'
+    NCCL_HOME=f'{FOLDER_ROOT}/nccl/build'
     EFA_HOME=f'/opt/amazon/efa'
+
+    # sanity check, simple mpirun that will print hostnames
+    task0.run(f'{MPI_HOME}/bin/mpirun --host {host_str} hostname')
+
 
     np = args.nproc_per_node
 
@@ -102,17 +103,17 @@ def launcher():
            f'-mca orte_base_help_aggregate 0 '   # more logging messages
            f'-x LD_LIBRARY_PATH={NCCL_HOME}/lib:$LD_LIBRARY_PATH '
            f'-oversubscribe ' # for "There are not enough slots" error
-           f'{folder_root}/nccl-tests/build/all_reduce_perf -b 1280M -e 1280M -f 2 ')
+           f'{FOLDER_ROOT}/nccl-tests/build/all_reduce_perf -b 1280M -e 1280M -f 2 ')
 
-    cmd_efa = (f'{mpi_home}/bin/mpirun '
+    cmd_efa = (f'{MPI_HOME}/bin/mpirun '
                f'-x FI_PROVIDER="efa" '
                f'-x FI_OFI_RXR_RX_COPY_UNEXP=1 -x FI_OFI_RXR_RX_COPY_OOO=1 '
                f'-x FI_EFA_MR_CACHE_ENABLE=1 -x FI_OFI_RXR_INLINE_MR_ENABLE=1 '
-               f'-x LD_LIBRARY_PATH={folder_root}/aws-ofi-nccl/install/lib/:{nccl_home}/lib:{CUDA_HOME}/lib64:{EFA_HOME}/lib64:$LD_LIBRARY_PATH '
+               f'-x LD_LIBRARY_PATH={FOLDER_ROOT}/aws-ofi-nccl/install/lib/:{NCCL_HOME}/lib:{CUDA_HOME}/lib64:{EFA_HOME}/lib64:{MPI_HOME}/lib:$LD_LIBRARY_PATH '
                f'-x NCCL_DEBUG=INFO -x NCCL_TREE_THRESHOLD=0 --host localhost -n 2 -N 2 '
                f'--mca btl tcp,self --mca btl_tcp_if_exclude lo,docker0 --bind-to none '
                f'--oversubscribe '
-               f'{folder_root}/nccl-tests/build/all_reduce_perf -b 8 -e 1G -f 2 -g 1 -c 1 -n 2')
+               f'{FOLDER_ROOT}/nccl-tests/build/all_reduce_perf -b 8 -e 1G -f 2 -g 1 -c 1 -n 2')
 
     
     # cmd_efa = (f'$HOME/anaconda3/bin/mpirun '

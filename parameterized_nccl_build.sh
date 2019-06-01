@@ -26,18 +26,19 @@
 # GIT_CHECKOUT_CMD="git checkout dev/kwen/multi-socket"
 # source parameterized_nccl_build.sh
 
-# NCCL_HOME is used for aws-ofi:nccl-tests, contains include, lib
-export NCCL_HOME=$HOME/nccl/nccl-$NCCL_VERSION_TAG/nccl/build
-
-# MPI_HOME is used for aws-ofi:nccl-test, contains bin, lib, include
-export MPI_HOME=$HOME/anaconda3
+export FOLDER_ROOT=~/nccl/nccl-$NCCL_VERSION_TAG
 
 # CUDA_HOME is used for nccl:nccl-tests:aws-ofi, contains bin, lib, include
 export CUDA_HOME=/usr/local/cuda-10.0
 
+# MPI_HOME is used for aws-ofi:nccl-test, contains bin, lib, include
+export MPI_HOME=$HOME/anaconda3
+
+# NCCL_HOME is used for aws-ofi:nccl-tests, contains include, lib
+export NCCL_HOME=$FOLDER_ROOT/nccl/build
+
 export EFA_HOME=/opt/amazon/efa
 
-export FOLDER_ROOT=~/nccl/nccl-$NCCL_VERSION_TAG
 
 pushd .
 
