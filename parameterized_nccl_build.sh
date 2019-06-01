@@ -35,25 +35,20 @@ export MPI_HOME=$HOME/anaconda3
 # CUDA_HOME is used for nccl:nccl-tests:aws-ofi, contains bin, lib, include
 export CUDA_HOME=/usr/local/cuda-10.0
 
+export FOLDER_ROOT=~/nccl/nccl-$NCCL_VERSION_TAG
 
 pushd .
 
 if [ -z ${NCCL_VERSION_TAG+x} ]; then
-    NCCL_VERSION_TAG="default"
-    echo "Using default tag $NCCL_VERSION_TAG"
-else
-    echo "Using existing tag $NCCL_VERSION_TAG"
+    echo "Error: Must set NCCL_VERSION_TAG"
+    exit
 fi
 
 if [ -z ${GIT_CHECKOUT_CMD+x} ]; then
-    GIT_CHECKOUT_CMD="git checkout v2.4.6-1"
-    echo "Using default git checkout cmd $GIT_CHECKOUT_CMD"
-else
-    echo "Using existing git checkout cmd $GIT_CHECKOUT_CMD"
+    echo "Error: Must set GIT_CHECKOUT_CMD"
+    exit
 fi
 
-
-export FOLDER_ROOT=~/nccl/nccl-$NCCL_VERSION_TAG
 
 if [ -z ${NCCL_WIPE_PREVIOUS_BUILD+x} ]; then
     echo "NCCL_WIPE_PREVIOUS_BUILD not set, reusing previous build"
@@ -121,6 +116,6 @@ $HOME/anaconda3/bin/mpirun \
 -x NCCL_DEBUG=INFO -x NCCL_TREE_THRESHOLD=0 --host localhost -n 2 -N 2 \
 --mca btl tcp,self --mca btl_tcp_if_exclude lo,docker0 --bind-to none \
 --oversubscribe \
-~/nccl/nccl-$NCCL_VERSION_TAG/nccl-tests/build/all_reduce_perf -b 8 -e 1G -f 2 -g 1 -c 1 -n 2
+~/nccl/nccl-$NCCL_VERSION_TAG/nccl-tests/build/all_reduce_perf -b 8 -e 1M -f 2 -g 1 -c 1 -n 2
 
 popd
