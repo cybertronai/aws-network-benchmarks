@@ -26,13 +26,13 @@
 # GIT_CHECKOUT_CMD="git checkout dev/kwen/multi-socket"
 # source parameterized_nccl_build.sh
 
-# NCCL_HOME is used for linking of nccl-tests, contains include, lib
+# NCCL_HOME is used for aws-ofi:nccl-tests, contains include, lib
 export NCCL_HOME=$HOME/nccl/nccl-$NCCL_VERSION_TAG/nccl/build
 
-# MPI_HOME contains bin, lib, include, used for aws-ofi, nccl-test
+# MPI_HOME is used for aws-ofi:nccl-test, contains bin, lib, include
 export MPI_HOME=$HOME/anaconda3
 
-# CUDA_HOME, contains bin, lib, include bin, used for nccl/nccl-tests/aws-ofi
+# CUDA_HOME is used for nccl:nccl-tests:aws-ofi, contains bin, lib, include
 export CUDA_HOME=/usr/local/cuda-10.0
 
 
@@ -111,17 +111,6 @@ cd nccl-tests
 
 # TODO(y): is this same as as MPI_HOME, or are there extra things in anaconda3?
 export LD_LIBRARY_PATH=$HOME/anaconda3/lib/:$LD_LIBRARY_PATH
-#make MPI=1 MPI_HOME=$MPI_HOME NCCL_HOME=$NCCL_HOME CUDA_HOME=$CUDA_HOME
 make MPI=1
-
-$HOME/anaconda3/bin/mpirun \
--x FI_PROVIDER="efa" \
--x FI_OFI_RXR_RX_COPY_UNEXP=1 -x FI_OFI_RXR_RX_COPY_OOO=1 \
--x FI_EFA_MR_CACHE_ENABLE=1 -x FI_OFI_RXR_INLINE_MR_ENABLE=1 \
--x LD_LIBRARY_PATH=$HOME/nccl/nccl-$NCCL_VERSION_TAG/aws-ofi-nccl/install/lib/:$NCCL_HOME/lib:/usr/local/cuda-10.0/lib64:/opt/amazon/efa/lib64:$LD_LIBRARY_PATH \
--x NCCL_DEBUG=INFO -x NCCL_TREE_THRESHOLD=0 --host localhost -n 2 -N 2 \
---mca btl tcp,self --mca btl_tcp_if_exclude lo,docker0 --bind-to none \
---oversubscribe \
-~/nccl/nccl-$NCCL_VERSION_TAG/nccl-tests/build/all_reduce_perf -b 8 -e 1G -f 2 -g 1 -c 1 -n 2
 
 popd
