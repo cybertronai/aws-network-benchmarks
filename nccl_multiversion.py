@@ -38,6 +38,12 @@ def launcher():
     #    job.run('export NCCL_MIN_NRINGS=16')
     job.rsync('.')
 
+    # check that ib_uverbs are loaded, and load them if not
+    for task in job.tasks:
+        task.run('/usr/sbin/lsmod')
+        if 'verbs' not in task.output:
+            task.run('sudo /usr/sbin/modprobe ib_uverbs')
+                
     setup_completed_fn = 'setup_completed'
     if not job.tasks[0].exists(setup_completed_fn) or args.force_rebuild:
         def nccl_build(nccl_version_tag, gitcmd):
@@ -87,9 +93,12 @@ def launcher():
 
     # sanity check, simple mpirun that will print hostnames
     task0.run(f'{MPI_HOME}/bin/mpirun --host {host_str} hostname')
+    
+    NUM_GPUS = 8 * args.num_tasks
+    NUM_GPUS = 2
 
     # https://github.com/NVIDIA/nccl-tests/issues/21
-    cmd = (f'{MPI_HOME}/bin/mpirun --host {host_str} -np {args.num_gpus} '
+    cmd_eth = (f'{MPI_HOME}/bin/mpirun --host {host_str} -n {NUM_GPUS} '
            f'-N 8 '
            f'-mca btl ^openib '  # get rid of no infiniband warning '
            f'-mca oob_tcp_if_include ens5 -mca btl_tcp_if_include ens5 '  # force ens5
@@ -110,16 +119,18 @@ def launcher():
                f'{CUDA_HOME}/lib64:'
                f'{EFA_HOME}/lib64:'
                f'{MPI_HOME}/lib:$LD_LIBRARY_PATH '
-               f'-x NCCL_DEBUG=INFO '  # print NCCL version info
+               f'-x NCCL_DEBUG=INFO '        # print NCCL version info
                f'-x NCCL_TREE_THRESHOLD=0 '  # Disable tree-algorithm, faster for <8 instances
-               f'--host localhost -n 2 -N 2 '
+               f'--host {host_str} -n {NUM_GPUS} -N 1 '
                f'--mca btl tcp,self --mca btl_tcp_if_exclude lo,docker0 '
                f'--bind-to none '
-               f'--oversubscribe '  # # https://github.com/NVIDIA/nccl-tests/issues/21
-               f'{FOLDER_ROOT}/nccl-tests/build/all_reduce_perf -b 8 -e 1G -f 2 -g 1 -c 1 -n 2')
+               f'--oversubscribe '           # https://github.com/NVIDIA/nccl-tests/issues/21
+               f'{FOLDER_ROOT}/nccl-tests/build/all_reduce_perf -b 8 -e 1G -f 2 -g 1 -c 1 -n {NUM_GPUS}')
 
     if args.do_efa:
         cmd = cmd_efa
+    else:
+        cmd = cmd_eth
 
     task0.run(cmd)
 
