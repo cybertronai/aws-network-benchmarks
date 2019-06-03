@@ -111,14 +111,4 @@ cd nccl-tests
 export LD_LIBRARY_PATH=$HOME/anaconda3/lib/:$LD_LIBRARY_PATH
 make MPI=1
 
-$MPI_HOME/bin/mpirun \
--x FI_PROVIDER="efa" \
--x FI_OFI_RXR_RX_COPY_UNEXP=1 -x FI_OFI_RXR_RX_COPY_OOO=1 \
--x FI_EFA_MR_CACHE_ENABLE=1 -x FI_OFI_RXR_INLINE_MR_ENABLE=1 \
--x LD_LIBRARY_PATH=$FOLDER_ROOT/aws-ofi-nccl/install/lib/:$NCCL_HOME/lib:$CUDA_HOME/lib64:$EFA_HOME/lib64:$MPI_HOME/lib:$LD_LIBRARY_PATH \
--x NCCL_DEBUG=INFO -x NCCL_TREE_THRESHOLD=0 --host localhost -n 2 -N 2 \
---mca btl tcp,self --mca btl_tcp_if_exclude lo,docker0 --bind-to none \
---oversubscribe \
-~/nccl/nccl-$NCCL_VERSION_TAG/nccl-tests/build/all_reduce_perf -b 8 -e 1M -f 2 -g 1 -c 1 -n 2
-
 popd

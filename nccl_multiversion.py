@@ -1,5 +1,11 @@
 #!/usr/bin/env python
-# python nccl_multiversion.py
+"""Usage
+export NCLUSTER_ZONE=us-east-1b
+export NCLUSTER_AWS_EFA=1
+export NCLUSTER_AWS_NOEFS=1
+python nccl_multiversion.py
+"""
+
 
 import argparse
 import os
@@ -7,7 +13,7 @@ import os
 import ncluster
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--name', type=str, default='nccl_multiversion')
+parser.add_argument('--name', type=str, default='sanity00')
 parser.add_argument('--instance_type', type=str, default="p3dn.24xlarge")
 parser.add_argument('--num_tasks', type=int, default=2, help="number of nodes")
 parser.add_argument('--spot', action='store_true', help='use spot instances')
@@ -39,13 +45,27 @@ def launcher():
     job.rsync('.')
 
     # check that ib_uverbs are loaded, and load them if not
+    # Also make sure that EFA provider is available
     for task in job.tasks:
         task.run('/usr/sbin/lsmod')
         if 'verbs' not in task.output:
             task.run('sudo /usr/sbin/modprobe ib_uverbs')
+        task.run('/usr/sbin/lsmod')
+        assert 'verbs' in task.output
+
+        task.run('/opt/amazon/efa/bin/fi_info -p efa')
+        assert 'provider: efa' in task.output
+
                 
     setup_completed_fn = 'setup_completed'
     if not job.tasks[0].exists(setup_completed_fn) or args.force_rebuild:
+        # install rdma core and libibverbs
+        job.run('wget http://mirror.centos.org/centos/6/os/x86_64/Packages/rdma-6.9_4.1-3.el6.noarch.rpm')
+        job.run('sudo yum install -y rdma-6.9_4.1-3.el6.noarch.rpm')
+
+        job.run('wget http://mirror.centos.org/centos/6/os/x86_64/Packages/libibverbs-1.1.8-4.el6.x86_64.rpm')
+        job.run('sudo yum install -y ./libibverbs-1.1.8-4.el6.x86_64.rpm')
+
         def nccl_build(nccl_version_tag, gitcmd):
             job.run(f'export NCCL_VERSION_TAG="{nccl_version_tag}"')
             job.run(f'export GIT_CHECKOUT_CMD="{gitcmd}"')
@@ -91,22 +111,16 @@ def launcher():
     NCCL_HOME = f'{FOLDER_ROOT}/nccl/build'
     EFA_HOME = f'/opt/amazon/efa'
 
+    #    task0.run('export LD_DEBUG=libs')  # show libraries that are getting loaded
+
+
     # sanity check, simple mpirun that will print hostnames
     task0.run(f'{MPI_HOME}/bin/mpirun --host {host_str} hostname')
     
     NUM_GPUS = 8 * args.num_tasks
     NUM_GPUS = 2
 
-    # https://github.com/NVIDIA/nccl-tests/issues/21
-    cmd_eth = (f'{MPI_HOME}/bin/mpirun --host {host_str} -n {NUM_GPUS} '
-           f'-N 8 '
-           f'-mca btl ^openib '  # get rid of no infiniband warning '
-           f'-mca oob_tcp_if_include ens5 -mca btl_tcp_if_include ens5 '  # force ens5
-           f'-mca orte_base_help_aggregate 0 '  # more logging messages
-           f'-x LD_LIBRARY_PATH={NCCL_HOME}/lib:$LD_LIBRARY_PATH '
-           f'-oversubscribe '  # for "There are not enough slots" error
-           f'{FOLDER_ROOT}/nccl-tests/build/all_reduce_perf -b 1280M -e 1280M -f 2 ')
-
+    # Run through EFA on 2 gpus/2 machines
     cmd_efa = (f'{MPI_HOME}/bin/mpirun '
                f'-x FI_PROVIDER="efa" '  # Enables running nccl-tests using EFA provider.
                f'-x FI_OFI_RXR_RX_COPY_UNEXP=1 '  #  Disables using bounce buffers for unexpected messages.
@@ -125,12 +139,15 @@ def launcher():
                f'--mca btl tcp,self --mca btl_tcp_if_exclude lo,docker0 '
                f'--bind-to none '
                f'--oversubscribe '           # https://github.com/NVIDIA/nccl-tests/issues/21
-               f'{FOLDER_ROOT}/nccl-tests/build/all_reduce_perf -b 8 -e 1G -f 2 -g 1 -c 1 -n {NUM_GPUS}')
+               f'{FOLDER_ROOT}/nccl-tests/build/all_reduce_perf -b 8 -e 1M -f 2 -g 1 -c 1 -n {NUM_GPUS}')
 
     if args.do_efa:
         cmd = cmd_efa
     else:
+        assert False
         cmd = cmd_eth
+
+    
 
     task0.run(cmd)
 
