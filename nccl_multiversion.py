@@ -1,5 +1,12 @@
 #!/usr/bin/env python
 """Usage
+
+pip install -r https://raw.githubusercontent.com/yaroslavvb/ncluster/master/requirements.txt
+pip install -U ncluster
+export AWS_ACCESS_KEY_ID=AKIAIBATdf343
+export AWS_SECRET_ACCESS_KEY=z7yKEP/RhO3Olk343aiP
+export AWS_DEFAULT_REGION=us-east-1
+
 export NCLUSTER_ZONE=us-east-1b
 export NCLUSTER_AWS_EFA=1
 export NCLUSTER_AWS_NOEFS=1
