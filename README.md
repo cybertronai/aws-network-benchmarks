@@ -16,12 +16,17 @@ Some benchmarks print result on console, for others, you need to SSH into the ma
 
 This builds latest NCCL and nccl-examples and runs allreduce benchmark.
 
+For EFA test
 ```
-python nccl_multiversion.py  --instance_type=p3dn.24xlarge --nproc_per_node=4
-# then SSH into machine and run `sudo nload`, hit Right to see load on ens5
+export NCLUSTER_ZONE=us-east-1b
+python nccl_multiversion.py --instance_type=p3dn.24xlarge --name=nccl-efa --image_name='dlami23-efa'
+```
+For Ethernet test
+```
+python nccl_multiversion.py --instance_type=p3.16xlarge --name=nccl-ethernet --image_name='Deep Learning AMI (Ubuntu) Version 22.0'
 ```
 
-Current: 25 Gbps with 16 GPUs over 2 nodes, 1GB allreduce
+Current: EFA=1.35 Gbps, Ethernet= with 16 GPUs over 2 nodes pre-patch 
 
 issues:
 - https://github.com/NVIDIA/nccl/issues/209
