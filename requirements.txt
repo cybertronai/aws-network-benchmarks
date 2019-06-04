@@ -3,9 +3,5 @@ ray
 numpy
 ncluster
 
-# ncluster subdependencies
-boto3
-paramiko
-portpicker
-tzlocal
-attrdict
+# for optional logging if WANDB_API_KEY is set
+wandb

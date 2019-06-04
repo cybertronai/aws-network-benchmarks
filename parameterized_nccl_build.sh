@@ -1,5 +1,7 @@
-# Builds nccl, nccl-tests and aws-ofi-nccl for specific nccl version.
-# Paths specialized to DLAMI 23, cuda-10
+# Script to build nccl, nccl-test and aws-ofi for specific version of nccl
+#
+# Paths specialized for DLAMI 23, cuda-10.
+# Applies ~/aws-ofi-nccl.patch if present
 #
 # Parameters:
 # NCCL_VERSION_TAG: for folder name, all results go to
@@ -38,6 +40,9 @@ export MPI_HOME=$HOME/anaconda3
 export NCCL_HOME=$FOLDER_ROOT/nccl/build
 
 export EFA_HOME=/opt/amazon/efa
+
+# PyTorch install asks for NCCL_ROOT_DIR, contains build, README.md, src
+# export NCCL_ROOT_DIR=$FOLDER_ROOT/nccl
 
 
 pushd .
@@ -83,15 +88,20 @@ export NVCC_GENCODE="-gencode=arch=compute_35,code=sm_35 -gencode=arch=compute_5
 make -j src.build
 
 
-# PyTorch install asks for NCCL_ROOT_DIR, contains build, README.md, src
-# export NCCL_ROOT_DIR=$FOLDER_ROOT/nccl
-
 echo "Installing aws-ofi-nccl"
 mkdir -p $FOLDER_ROOT && cd $FOLDER_ROOT
 git clone https://github.com/aws/aws-ofi-nccl.git || echo exists
 cd aws-ofi-nccl
-# make clean
-# git apply aws_ofi_nccl.patch
+
+if [ -f "~/aws-ofi-nccl.patch" ]; then
+    echo 'using ~/aws-ofi-nccl.patch version of aws-ofi-nccl'
+    git apply ~/aws-ofi-nccl.patch
+else
+    echo 'using master version of aws-ofi-nccl'
+    git apply ~/aws-ofi-nccl.patch
+fi
+
+make clean
 ./autogen.sh
 mkdir install
 ./configure --prefix=$FOLDER_ROOT/aws-ofi-nccl/install \

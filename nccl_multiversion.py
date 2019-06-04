@@ -2,7 +2,7 @@
 """
 Run NCCL all_reduce_perf test on regular or EFA-enabled instances
 
-# usage
+# usage (Python 3.6)
 pip install -r https://raw.githubusercontent.com/cybertronai/aws-network-benchmarks/master/requirements.txt
 
 export AWS_ACCESS_KEY_ID=AKIAIBATdf343
@@ -19,10 +19,8 @@ python nccl_multiversion.py --instance_type=p3.16xlarge --name=nccl-ethernet --i
 """
 
 import argparse
-
-from ncluster import aws_util as u
-
-import ncluster
+import os
+import shlex
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--name', type=str, default='nccl_multiversion')
@@ -38,18 +36,28 @@ parser.add_argument('--do_efa', type=int, default=-1)
 parser.add_argument('--role', type=str, default='launcher')
 parser.add_argument('--num_gpus', type=int, default=0,
                     help='number of processes to launch, if not specified, set automatically from number of gpus on instance')
+# default=os.environ['HOME']+'/Downloads/aws-ofi-nccl.patch'
+parser.add_argument('--ofi_patch', type=str, default='', help='location of patch')
+
+# internal flag
+parser.add_argument('--internal_role', type=str, default='launcher')
+parser.add_argument('--internal_cmd', type=str, default='echo whoami')
+
 
 args = parser.parse_args()
 
 SETUP_COMLETED_FN = 'setup_completed'
 
 
-def main():
+def launcher():
+    from ncluster import aws_util as u
+    import ncluster
 
     job = ncluster.make_job(**vars(args))
     job.rsync('.')
+    job.run('pip install -r worker_requirements.txt')  # things needed for worker()
 
-    # choose EFA/no-EFA codepath based on instance-type
+    # choose EFA/no-EFA codepath based on instance-type, overridable by do_efa
     assert args.do_efa in [-1, 0, 1]
     if args.do_efa == -1:
         if u.instance_supports_efa(args.instance_type):
@@ -84,6 +92,7 @@ def main():
                 # task1 ->ssh-> task2
                 task2.run(f'echo "{public_keys[task1]}" >> ~/.ssh/authorized_keys',
                           non_blocking=True)
+        
         if args.do_efa == 0:
             job.tasks[0].write(SETUP_COMLETED_FN, 'ok')  # end of no-EFA setup
         job.tasks[0].write(SETUP_COMLETED_FN, '0')
@@ -106,6 +115,10 @@ def main():
     NPER_NODE = NUM_GPUS // 2
 
     if args.do_efa:
+        if args.ofi_patch:
+            assert os.path.exists(args.ofi_patch)
+            job.upload(args.ofi_patch)
+        
         if not job.tasks[0].exists(SETUP_COMLETED_FN) or args.force_rebuild:
             # install rdma core and libibverbs
             job.run('wget http://mirror.centos.org/centos/6/os/x86_64/Packages/rdma-6.9_4.1-3.el6.noarch.rpm')
@@ -163,9 +176,12 @@ def main():
                f'--host {host_str} '
                f'--mca btl tcp,self --mca btl_tcp_if_exclude lo,docker0 '
                f'--bind-to none '
-               f'--oversubscribe '  # https://github.com/NVIDIA/nccl-tests/issues/21 , TODO remove -n NUM_GPUS below
+               f'--oversubscribe '  # https://github.com/NVIDIA/nccl-tests/issues/21
                f'{FOLDER_ROOT}/nccl-tests/build/all_reduce_perf -b 8 -e 256M -f 2 -g 1 -c 1 ')
-        task0.run(cmd)
+
+        # assume we didn't change directory from ~
+        task0.run(f'python {__file__} --internal_role=worker --internal_cmd={shlex.quote(cmd)}')
+
     else:
         print("Running Ethernet test")
         #  MPI_HOME = '/usr/local/mpi'  # for DLAMI 22
@@ -174,7 +190,7 @@ def main():
         NCCL_VERSION_TAG = '2.4.6'
         # fails with [ip-172-31-48-152][[16356,1],5][btl_tcp_endpoint.c:626:mca_btl_tcp_endpoint_recv_connect_ack] received unexpected process identifier [[16356,1],6]
         # [ip-172-31-48-152][[16356,1],2][btl_tcp_endpoint.c:626:mca_btl_tcp_endpoint_recv_connect_ack] received unexpected process identifier [[16356,1],5]
-        
+
         FOLDER_ROOT = f"{task0.homedir}/nccl/nccl-{NCCL_VERSION_TAG}"
         NCCL_HOME = f'{FOLDER_ROOT}/nccl/build'
         SIZE_MB = 256
@@ -185,7 +201,7 @@ def main():
                   f'-np {NUM_GPUS} -N {NPER_NODE} '
                   f'-mca btl ^openib '  # get rid of no infiniband warning '
                   f'-mca orte_base_help_aggregate 0 '   # more logging messages
-                  # f'-mca oob_tcp_if_include ens5 -mca btl_tcp_if_include ens5 ' # force ens5 (only use on p3dn instances
+                  # f'-mca oob_tcp_if_include ens5 -mca btl_tcp_if_include ens5 ' # force ens5 (only use on p3dn + Ethernet)
                   f'-x LD_LIBRARY_PATH='
                   f'{NCCL_HOME}/lib:'
                   f'{CUDA_HOME}/lib64:'
@@ -195,6 +211,20 @@ def main():
                   f'{FOLDER_ROOT}/nccl-tests/build/all_reduce_perf -b {SIZE_MB}M -e {SIZE_MB}M -f 2 ')
 
     print(task0.output)
+
+
+def worker():
+    import wandb
+    os.system(args.internal_cmd)
+
+
+def main():
+    if args.internal_role == 'launcher':
+        launcher()
+    elif args.internal_role == 'worker':
+        worker()
+    else:
+        assert False, f'unknown role {args.internal_role}'
 
 
 if __name__ == '__main__':
