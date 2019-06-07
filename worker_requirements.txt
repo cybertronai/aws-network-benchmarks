@@ -1,0 +1,2 @@
+# for optional logging if WANDB_API_KEY is set
+wandb
