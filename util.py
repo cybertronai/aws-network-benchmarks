@@ -1,6 +1,9 @@
+import base64
 import os
+import pickle
 import subprocess
 import sys
+import tempfile
 import threading
 from typing import List
 
@@ -110,3 +113,74 @@ def parallelize(f, xs: List) -> None:
         thread.join()
     if exceptions:
         raise exceptions[0]
+
+
+# this helper is here in case we later want to capture huge stderr that doesn't fit in RAM
+class TemporaryFileHelper:
+    """Provides a way to fetch contents of temporary file."""
+    def __init__(self, temporary_file):
+        self.temporary_file = temporary_file
+
+    def getvalue(self) -> str:
+        return open(self.temporary_file.name).read()
+
+
+STDOUT = 1
+STDERR = 2
+
+
+class capture_stderr:
+  """Utility to capture output, use as follows
+     with util.capture_stderr() as stderr:
+        sess = tf.Session()
+    print("Captured:", stderr.getvalue()).
+    """
+
+  def __init__(self, fd=STDERR):
+    self.fd = fd
+    self.prevfd = None
+
+  def __enter__(self):
+    t = tempfile.NamedTemporaryFile()
+    self.prevfd = os.dup(self.fd)
+    os.dup2(t.fileno(), self.fd)
+    return TemporaryFileHelper(t)
+
+  def __exit__(self, exc_type, exc_value, traceback):
+    os.dup2(self.prevfd, self.fd)
+
+
+class capture_stdout:
+  """Utility to capture output, use as follows
+     with util.capture_stdout() as stdout:
+        sess = tf.Session()
+    print("Captured:", stdout.getvalue()).
+    """
+
+  def __init__(self, fd=STDOUT):
+    self.fd = fd
+    self.prevfd = None
+
+  def __enter__(self):
+    t = tempfile.NamedTemporaryFile()
+    self.prevfd = os.dup(self.fd)
+    os.dup2(t.fileno(), self.fd)
+    return TemporaryFileHelper(t)
+
+  def __exit__(self, exc_type, exc_value, traceback):
+    os.dup2(self.prevfd, self.fd)
+
+
+def text_pickle(obj) -> str:
+    """Pickles object into character string"""
+    pickle_string = pickle.dumps(obj)
+    pickle_string_encoded: bytes = base64.b16encode(pickle_string)
+    return pickle_string_encoded.decode('ascii')
+
+
+def text_unpickle(pickle_string_encoded: str):
+    """Unpickles character string"""
+    if not pickle_string_encoded:
+        return None
+    obj = pickle.loads(base64.b16decode(pickle_string_encoded))
+    return obj

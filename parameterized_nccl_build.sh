@@ -44,16 +44,17 @@ export EFA_HOME=/opt/amazon/efa
 # PyTorch install asks for NCCL_ROOT_DIR, contains build, README.md, src
 # export NCCL_ROOT_DIR=$FOLDER_ROOT/nccl
 
+logtag="parameterized_nccl_build.sh: "
 
 pushd .
 
 if [ -z ${NCCL_VERSION_TAG+x} ]; then
-    echo "Error: Must set NCCL_VERSION_TAG"
+    echo "$logtag Error: Must set NCCL_VERSION_TAG"
     exit
 fi
 
 if [ -z ${GIT_CHECKOUT_CMD+x} ]; then
-    echo "Error: Must set GIT_CHECKOUT_CMD"
+    echo "$logtag Error: Must set GIT_CHECKOUT_CMD"
     exit
 fi
 
@@ -67,12 +68,12 @@ fi
 
 if [ -z ${GIT_CHECKOUT_CMD+x} ]; then
     GIT_CHECKOUT_CMD="skipping checkout"
-    echo "Using default git checkout cmd $GIT_CHECKOUT_CMD"
+    echo "$logtag Using default git checkout cmd $GIT_CHECKOUT_CMD"
 else
-    echo "Using existing git checkout cmd $GIT_CHECKOUT_CMD"
+    echo "$logtag Using existing git checkout cmd $GIT_CHECKOUT_CMD"
 fi
 
-echo "Installing nccl"
+echo "$logtag Installing nccl"
 mkdir -p $FOLDER_ROOT && cd $FOLDER_ROOT
 git clone https://github.com/NVIDIA/nccl.git || echo "exists"
 
@@ -88,17 +89,19 @@ export NVCC_GENCODE="-gencode=arch=compute_35,code=sm_35 -gencode=arch=compute_5
 make -j src.build
 
 
-echo "Installing aws-ofi-nccl"
+echo "$logtag Installing aws-ofi-nccl"
 mkdir -p $FOLDER_ROOT && cd $FOLDER_ROOT
 git clone https://github.com/aws/aws-ofi-nccl.git || echo exists
 cd aws-ofi-nccl
 
-if [ -f "~/aws-ofi-nccl.patch" ]; then
-    echo 'using ~/aws-ofi-nccl.patch version of aws-ofi-nccl'
-    git apply ~/aws-ofi-nccl.patch
+if [ -f "$HOME/aws-ofi-nccl.patch" ]; then
+    echo "using ~/aws-ofi-nccl.patch version of aws-ofi-nccl"
+    # git apply fails with "patch does not apply", use patch command instead
+    #    git apply ~/aws-ofi-nccl.patch
+    patch -p1 < ~/aws-ofi-nccl.patch
 else
-    echo 'using master version of aws-ofi-nccl'
-    git apply ~/aws-ofi-nccl.patch
+    echo "$logtag using master version of aws-ofi-nccl"
+    #    git apply ~/aws-ofi-nccl.patch
 fi
 
 make clean

@@ -22,6 +22,10 @@ import argparse
 import os
 import shlex
 
+import re
+
+import util
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--name', type=str, default='nccl_multiversion')
 parser.add_argument('--instance_type', type=str, default="p3dn.24xlarge")
@@ -29,19 +33,18 @@ parser.add_argument('--num_tasks', type=int, default=2, help="number of nodes")
 parser.add_argument('--spot', action='store_true', help='use spot instances')
 parser.add_argument('--skip_setup', action='store_true',
                     help='can use this option on reruns for slightly faster turn-around')
-parser.add_argument('--image_name', type=str, default='dlami23-efa')
+parser.add_argument('--image_name', type=str, default='dlami23-efa', help="Image to use for this run. dlami23-efa was image created by taking DLAMI 23 Amazon version, and installing extra packages in https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/efa-start.html")
 
-parser.add_argument('--force_rebuild', type=int, default=0)
-parser.add_argument('--do_efa', type=int, default=-1)
-parser.add_argument('--role', type=str, default='launcher')
-parser.add_argument('--num_gpus', type=int, default=0,
-                    help='number of processes to launch, if not specified, set automatically from number of gpus on instance')
+parser.add_argument('--force_rebuild', type=int, default=0, help="ignore previously build artifacts and rebuild from scratch")
+parser.add_argument('--do_efa', type=int, default=-1, help="whether to test EFA setup. If left at -1, determined automatically from instance type.")
+
 # default=os.environ['HOME']+'/Downloads/aws-ofi-nccl.patch'
-parser.add_argument('--ofi_patch', type=str, default='', help='location of patch')
+parser.add_argument('--ofi_patch', type=str, default='', help='local location of patch to apply to aws-ofi install')
 
 # internal flag
 parser.add_argument('--internal_role', type=str, default='launcher')
 parser.add_argument('--internal_cmd', type=str, default='echo whoami')
+parser.add_argument('--internal_info', type=str, default='800358020000007B7D71002E', help='base16 encoded dict of additional info to log to wandb')
 
 
 args = parser.parse_args()
@@ -54,6 +57,7 @@ def launcher():
     import ncluster
 
     job = ncluster.make_job(**vars(args))
+    job.propagate_env(['WANDB_API_KEY'])
     job.rsync('.')
     job.run('pip install -r worker_requirements.txt')  # things needed for worker()
 
@@ -113,13 +117,30 @@ def launcher():
     MPI_HOME = f'{task0.homedir}/anaconda3'
     NUM_GPUS = 16
     NPER_NODE = NUM_GPUS // 2
+    SIZE_MB = 1024
+
+    info = {}
+    info['CUDA_HOME'] = CUDA_HOME
+    info['MPI_HOME'] = MPI_HOME
+    info['NUM_GPUS'] = NUM_GPUS
+    info['NPER_NODE'] = NPER_NODE
+    info['SIZE_MB'] = SIZE_MB
+
+    info['do_efa'] = args.do_efa        
 
     if args.do_efa:
         if args.ofi_patch:
             assert os.path.exists(args.ofi_patch)
             job.upload(args.ofi_patch)
+            info['ofi_patch'] = True
+        else:
+            info['ofi_patch'] = False
+            # delete patch file if present from previous run
+            job.run(f'rm -f aws-ofi-nccl.patch')
         
         if not job.tasks[0].exists(SETUP_COMLETED_FN) or args.force_rebuild:
+            info['fresh_build'] = True
+
             # install rdma core and libibverbs
             job.run('wget http://mirror.centos.org/centos/6/os/x86_64/Packages/rdma-6.9_4.1-3.el6.noarch.rpm')
             job.run('sudo yum install -y rdma-6.9_4.1-3.el6.noarch.rpm')
@@ -150,9 +171,13 @@ def launcher():
 
         print("Running EFA test")
         NCCL_VERSION_TAG = '2.4.6'
+        info['NCCL_VERSION_TAG'] = NCCL_VERSION_TAG
         FOLDER_ROOT = f"{task0.homedir}/nccl/nccl-{NCCL_VERSION_TAG}"
+        info['FOLDER_ROOT'] = FOLDER_ROOT
         NCCL_HOME = f'{FOLDER_ROOT}/nccl/build'
+        info['NCCL_HOME'] = NCCL_HOME
         EFA_HOME = f'/opt/amazon/efa'
+        info['EFA_HOME'] = EFA_HOME
 
         # sanity check, simple mpirun that will print hostnames
         task0.run(f'{MPI_HOME}/bin/mpirun --host {host_str} hostname')
@@ -177,10 +202,11 @@ def launcher():
                f'--mca btl tcp,self --mca btl_tcp_if_exclude lo,docker0 '
                f'--bind-to none '
                f'--oversubscribe '  # https://github.com/NVIDIA/nccl-tests/issues/21
-               f'{FOLDER_ROOT}/nccl-tests/build/all_reduce_perf -b 8 -e 256M -f 2 -g 1 -c 1 ')
+               f'{FOLDER_ROOT}/nccl-tests/build/all_reduce_perf -b 8 -e {SIZE_MB}M -f 2 -g 1 -c 1 ')
 
         # assume we didn't change directory from ~
-        task0.run(f'python {__file__} --internal_role=worker --internal_cmd={shlex.quote(cmd)}')
+        pickled_info = util.text_pickle(info)
+        task0.run(f'python {__file__} --internal_role=worker --internal_cmd={shlex.quote(cmd)} --internal_info={pickled_info}')
 
     else:
         print("Running Ethernet test")
@@ -215,7 +241,31 @@ def launcher():
 
 def worker():
     import wandb
-    os.system(args.internal_cmd)
+    # log info propagated from the launcher
+    info = util.text_unpickle(args.internal_info)
+    
+    num_gpus = 8*args.num_tasks
+    efa_str = 'efa' if info['do_efa'] else 'eth'
+    patch_str = 'patched' if info['ofi_patch'] else 'stock'
+    name = f"bench-{num_gpus}-{efa_str}-{patch_str}"
+    wandb.init(project='nccl_multiversion', name=name)
+
+    if info:
+        wandb.log(info)
+
+    print("Running command:")
+    print(args.internal_cmd)
+    with util.capture_stdout() as outfile:
+        os.system(args.internal_cmd)
+
+    # print logs so they show up in console
+    out: str = outfile.getvalue()
+    print(out)
+    r = re.compile('Avg bus bandwidth.+?:.([1-9.]+)')
+    groups = r.findall(out)
+    assert len(groups) == 1, f"Couldn't match output: {out}"
+    wandb.log({"avg_bus_bandwidth": float(groups[0])})
+    float(groups[0])
 
 
 def main():
