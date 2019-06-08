@@ -213,6 +213,7 @@ def launcher():
            f'-x FI_OFI_RXR_RX_COPY_OOO=1 '  # Disables using bounce buffers for out of order messages.
            f'-x FI_EFA_MR_CACHE_ENABLE=1 '  # Enables memory region caching.
            f'-x FI_OFI_RXR_INLINE_MR_ENABLE=1 '  # Enables inline memory registration of data buffers.
+           f'-x NCCL_TREE_THRESHOLD=4294967296 '
            f'-x LD_LIBRARY_PATH='
            f'{FOLDER_ROOT}/aws-ofi-nccl/install/lib/:'
            f'{NCCL_HOME}/lib:'
@@ -220,10 +221,9 @@ def launcher():
            f'{EFA_HOME}/lib64:'
            f'{MPI_HOME}/lib:$LD_LIBRARY_PATH '
            f'-x NCCL_DEBUG=INFO '  # print NCCL version config
-           f'-x NCCL_TREE_THRESHOLD=0 '  # Disable tree-algorithm, faster for <8 instances
            f'--mca btl tcp,self --mca btl_tcp_if_exclude lo,docker0 '
            f'--bind-to none '
-           f'{FOLDER_ROOT}/nccl-tests/build/all_reduce_perf -b 8 -e {SIZE_MB}M -f 2 -g 1 -c 1 ')
+           f'{FOLDER_ROOT}/nccl-tests/build/all_reduce_perf -b 8 -e {SIZE_MB}M -f 2 -g 1 -c 1 -n 100')
 
     # assume we didn't change directory from ~
     pickled_config = util.text_pickle(config)
