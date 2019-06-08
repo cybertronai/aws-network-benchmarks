@@ -2,6 +2,7 @@ import base64
 import os
 import pickle
 import subprocess
+import shlex
 import sys
 import tempfile
 import threading
@@ -96,9 +97,9 @@ def parallelize(f, xs: List) -> None:
 
     exceptions = []
 
-    def f_wrapper(x):
+    def f_wrapper(x_):
         try:
-            f(x)
+            f(x_)
         except Exception as e:
             exceptions.append(e)
 
@@ -174,13 +175,14 @@ class capture_stdout:
 def text_pickle(obj) -> str:
     """Pickles object into character string"""
     pickle_string = pickle.dumps(obj)
-    pickle_string_encoded: bytes = base64.b16encode(pickle_string)
-    return pickle_string_encoded.decode('ascii')
+    pickle_string_encoded: bytes = base64.b64encode(pickle_string)
+    s = pickle_string_encoded.decode('ascii')
+    return s
 
 
 def text_unpickle(pickle_string_encoded: str):
     """Unpickles character string"""
     if not pickle_string_encoded:
         return None
-    obj = pickle.loads(base64.b16decode(pickle_string_encoded))
+    obj = pickle.loads(base64.b64decode(pickle_string_encoded))
     return obj

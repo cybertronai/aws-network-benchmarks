@@ -27,6 +27,8 @@ import subprocess
 import sys
 from typing import Tuple, Dict
 
+import parse_nccltest_output
+
 import util
 
 parser = argparse.ArgumentParser()
@@ -120,7 +122,7 @@ def launcher():
     MPI_HOME = f'{task0.homedir}/anaconda3'
     NUM_GPUS = 16
     NPER_NODE = NUM_GPUS // 2
-    SIZE_MB = 1024
+    SIZE_MB = 256 #4096
 
     config = {}
     config['CUDA_HOME'] = CUDA_HOME
@@ -130,6 +132,11 @@ def launcher():
     config['SIZE_MB'] = SIZE_MB
 
     config['do_efa'] = args.do_efa
+    config['id'] = u.get_account_number()
+    config['acc'] = u.get_account_name()
+    config['region'] = u.get_region()
+    config['zone'] = u.get_zone()
+    config['cmd'] = ' '.join(sys.argv)
 
     if args.do_efa:
         if args.ofi_patch:
@@ -259,53 +266,6 @@ def ossystem_with_pipe(cmd: str, out_fn: str):
             f.write(line)
 
 
-G = 1073741824
-M = 1048576
-K = 1024
-
-keys = [64 * K, M, 16 * M, 64 * M, 256 * M, G, 2 * G, 4 * G]
-key_names = ['64K', 'M', '16M', '64M', '256M', 'G', '2G', '4G']
-
-
-#       size         count    type   redop     time   algbw   busbw  error     time   algbw   busbw  error
-#
-def parse_nccl_output(fn) -> Tuple[Dict[int, float], Dict[int, float]]:
-    alg_bw = {}
-    bus_bw = {}
-    output_started = False
-    for line in open(fn):
-        line = line.strip()
-        if not line:
-            continue
-        if not len(line.split()) == 12:
-            continue
-        toks = line.split()
-        if 'size' in toks and 'time' in toks and 'busbw' in toks:
-            output_started = True
-            continue
-
-        if not output_started:
-            continue
-
-        size = int(toks[0])
-        if size in keys:
-            alg_bw[size] = float(toks[9])
-            bus_bw[size] = float(toks[10])
-    return alg_bw, bus_bw
-
-
-def make_readable(d, prefix: str) -> Dict[str, float]:
-    """Translates size keys into easier to read labels, ie 1073741824 to 1G"""
-
-    key_name_map = dict(zip(key_names, keys))
-
-    readable_map = {}
-    for name in key_names:
-        if key_name_map[name] in d:
-            readable_map[prefix+name] = d[key_name_map[name]]
-    return d
-
-
 def worker():
     """Runs benchmark locally on AWS and logs results."""
     
@@ -320,9 +280,15 @@ def worker():
     name = f"bench-{num_gpus}-{efa_str}-{patch_str}"
     wandb.init(project='nccl_multiversion', name=name)
 
+    # record run config parameters
+    print(config)
+    wandb.config.update({})
     if config:
-        pass
-    #        wandb.log(info)
+        wandb.config.update(config)
+
+    for key in os.environ:
+        if re.match(r"^NCCL|CUDA|PATH|^LD|USER|PWD", key):
+            wandb.config[key] = os.getenv(key)
 
     print("Running command:")
     print(args.internal_cmd)
@@ -331,11 +297,17 @@ def worker():
     ossystem_with_pipe(args.internal_cmd, output_fn)
     out = open(output_fn).read()
     
-    # print logs so they show up in console
-    r = re.compile('Avg bus bandwidth.+?:.([1-9.]+)')
-    groups = r.findall(out)
-    assert len(groups) == 1, f"Couldn't match output: {out}"
-    wandb.log({"avg_bus_bandwidth": float(groups[0])})
+    regex = re.compile('Avg bus bandwidth.+?:.([1-9.]+)')
+    #    groups = regex.findall(out)
+    #    assert len(groups) == 1, f"Couldn't match output: {out}"
+    #    wandb.log({"avg_bus_bandwidth": float(groups[0])})
+
+    # # get individual bandwidth numbers
+    alg_bw, bus_bw, avg_bw = parse_nccltest_output.parse(output_fn)
+
+    wandb.log(parse_nccltest_output.make_readable(alg_bw, 'algbw_'))
+    wandb.log(parse_nccltest_output.make_readable(bus_bw, 'busbw_'))
+    wandb.log({'avg_bw': avg_bw})
 
 
 def main():
