@@ -2,7 +2,6 @@ import base64
 import os
 import pickle
 import subprocess
-import shlex
 import sys
 import tempfile
 import threading
@@ -43,12 +42,29 @@ class FileLogger:
         self.f.close()
 
 
-def ossystem(cmd):
+def ossystem(cmd, shell=True):
     """Like os.system, but returns output of command as string."""
-    p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE,
+    p = subprocess.Popen(cmd, shell=shell, stdout=subprocess.PIPE,
                          stderr=subprocess.STDOUT)
     (stdout, stderr) = p.communicate()
     return stdout.decode('ascii')
+
+
+def ossystem_with_pipe(cmd: str, out_fn: str, shell: bool=True):
+    # like os.system(cmd+' | tee > out_fn') but gets around unbuffering restrictions on pipe
+    # use shell=True because commands can contain $
+
+    env = os.environ.copy()
+    with open(out_fn, 'wb') as f:
+        process = subprocess.Popen(cmd,
+                                   shell=shell, 
+                                   stderr=subprocess.STDOUT,
+                                   stdout=subprocess.PIPE,
+                                   env=env)
+        for line in iter(process.stdout.readline, b''):
+            sys.stdout.write(line.decode(sys.stdout.encoding))
+            sys.stdout.flush()
+            f.write(line)
 
 
 def get_global_rank():

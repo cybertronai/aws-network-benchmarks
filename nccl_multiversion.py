@@ -5,9 +5,9 @@ Run NCCL all_reduce_perf test on regular or EFA-enabled instances
 # usage (Python 3.6)
 pip install -r https://raw.githubusercontent.com/cybertronai/aws-network-benchmarks/master/requirements.txt
 
-export AWS_ACCESS_KEY_ID=AKIAIBATdf343
-export AWS_SECRET_ACCESS_KEY=z7yKEP/RhO3Olk343aiP
-export AWS_DEFAULT_REGION=us-east-1
+export AWS_ACCESS_KEY_ID=<access key id>
+export AWS_SECRET_ACCESS_KEY=<secret key>
+export AWS_DEFAULT_REGION=<one of us-east-1, us-west-2, eu-west-1>
 
 # to test EFA
 export NCLUSTER_ZONE=us-east-1b
@@ -20,15 +20,11 @@ python nccl_multiversion.py --instance_type=p3.16xlarge --name=nccl-ethernet --i
 
 import argparse
 import os
-import shlex
-
 import re
-import subprocess
+import shlex
 import sys
-from typing import Tuple, Dict
 
 import parse_nccltest_output
-
 import util
 
 parser = argparse.ArgumentParser()
@@ -50,6 +46,7 @@ parser.add_argument('--ofi_patch', type=str, default='', help='local location of
 parser.add_argument('--internal_role', type=str, default='launcher')
 parser.add_argument('--internal_cmd', type=str, default='echo whoami')
 parser.add_argument('--internal_config', type=str, default='800358020000007B7D71002E', help='base16 encoded dict of additional config attributes to log')
+parser.add_argument('--internal_config_fn', type=str, default='config_dict', help='location of filename with extra info to log')
 
 
 args = parser.parse_args()
@@ -132,11 +129,18 @@ def launcher():
     config['SIZE_MB'] = SIZE_MB
 
     config['do_efa'] = args.do_efa
-    config['id'] = u.get_account_number()
-    config['acc'] = u.get_account_name()
+    config['internal_id'] = u.get_account_number()
+    config['internal_alias'] = u.get_account_name()
     config['region'] = u.get_region()
     config['zone'] = u.get_zone()
+    config['launch_user'] = os.environ.get('USER', '')
     config['cmd'] = ' '.join(sys.argv)
+    config['launcher_conda'] = util.ossystem('echo ${CONDA_PREFIX:-"$(dirname $(which conda))/../"}')
+
+    if args.ofi_patch:
+        config['ofi_patch_hash'] = hash(open(args.ofi_patch).read())
+    
+    config.update(vars(args))
 
     if args.do_efa:
         if args.ofi_patch:
@@ -217,7 +221,8 @@ def launcher():
         # assume we didn't change directory from ~
 
         pickled_config = util.text_pickle(config)
-        task0.run(f'python {__file__} --internal_role=worker --internal_cmd={shlex.quote(cmd)} --internal_config={pickled_config}')
+        task0.write(args.internal_config_fn, pickled_config)
+        task0.run(f'python {__file__} --internal_role=worker --internal_cmd={shlex.quote(cmd)}')
 
     else:
         print("Running Ethernet test")
@@ -250,29 +255,15 @@ def launcher():
     print(task0.output)
 
 
-def ossystem_with_pipe(cmd: str, out_fn: str):
-    # like os.system(cmd+' | tee > out_fn') but gets around unbuffering restrictions on pipe
-
-    env = os.environ.copy()
-    with open(out_fn, 'wb') as f:
-        process = subprocess.Popen(cmd,
-                                   shell=True, # command may contain $vars
-                                   stderr=subprocess.STDOUT,
-                                   stdout=subprocess.PIPE,
-                                   env=env)
-        for line in iter(process.stdout.readline, b''):
-            sys.stdout.write(line.decode(sys.stdout.encoding))
-            sys.stdout.flush()
-            f.write(line)
-
-
 def worker():
     """Runs benchmark locally on AWS and logs results."""
     
     import wandb
     
     # log info propagated from the launcher
-    config = util.text_unpickle(args.internal_config)
+    config = util.text_unpickle(open(args.internal_config_fn).read())
+    config['worker_conda'] = util.ossystem('echo ${CONDA_PREFIX:-"$(dirname $(which conda))/../"}')
+
     
     num_gpus = 8*args.num_tasks
     efa_str = 'efa' if config['do_efa'] else 'eth'
@@ -294,13 +285,7 @@ def worker():
     print(args.internal_cmd)
 
     output_fn = 'output'
-    ossystem_with_pipe(args.internal_cmd, output_fn)
-    out = open(output_fn).read()
-    
-    regex = re.compile('Avg bus bandwidth.+?:.([1-9.]+)')
-    #    groups = regex.findall(out)
-    #    assert len(groups) == 1, f"Couldn't match output: {out}"
-    #    wandb.log({"avg_bus_bandwidth": float(groups[0])})
+    util.ossystem_with_pipe(args.internal_cmd, output_fn)
 
     # # get individual bandwidth numbers
     alg_bw, bus_bw, avg_bw = parse_nccltest_output.parse(output_fn)
