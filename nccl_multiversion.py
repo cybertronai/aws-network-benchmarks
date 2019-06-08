@@ -47,7 +47,7 @@ parser.add_argument('--ofi_patch', type=str, default='', help='local location of
 # internal flag
 parser.add_argument('--internal_role', type=str, default='launcher')
 parser.add_argument('--internal_cmd', type=str, default='echo whoami')
-parser.add_argument('--internal_info', type=str, default='800358020000007B7D71002E', help='base16 encoded dict of additional info to log to wandb')
+parser.add_argument('--internal_config', type=str, default='800358020000007B7D71002E', help='base16 encoded dict of additional config attributes to log')
 
 
 args = parser.parse_args()
@@ -122,27 +122,27 @@ def launcher():
     NPER_NODE = NUM_GPUS // 2
     SIZE_MB = 1024
 
-    info = {}
-    info['CUDA_HOME'] = CUDA_HOME
-    info['MPI_HOME'] = MPI_HOME
-    info['NUM_GPUS'] = NUM_GPUS
-    info['NPER_NODE'] = NPER_NODE
-    info['SIZE_MB'] = SIZE_MB
+    config = {}
+    config['CUDA_HOME'] = CUDA_HOME
+    config['MPI_HOME'] = MPI_HOME
+    config['NUM_GPUS'] = NUM_GPUS
+    config['NPER_NODE'] = NPER_NODE
+    config['SIZE_MB'] = SIZE_MB
 
-    info['do_efa'] = args.do_efa        
+    config['do_efa'] = args.do_efa
 
     if args.do_efa:
         if args.ofi_patch:
             assert os.path.exists(args.ofi_patch)
             job.upload(args.ofi_patch)
-            info['ofi_patch'] = True
+            config['ofi_patch'] = True
         else:
-            info['ofi_patch'] = False
+            config['ofi_patch'] = False
             # delete patch file if present from previous run
             job.run(f'rm -f aws-ofi-nccl.patch')
         
         if not job.tasks[0].exists(SETUP_COMLETED_FN) or args.force_rebuild:
-            info['fresh_build'] = True
+            config['fresh_build'] = True
 
             # install rdma core and libibverbs
             job.run('wget http://mirror.centos.org/centos/6/os/x86_64/Packages/rdma-6.9_4.1-3.el6.noarch.rpm')
@@ -174,13 +174,13 @@ def launcher():
 
         print("Running EFA test")
         NCCL_VERSION_TAG = '2.4.6'
-        info['NCCL_VERSION_TAG'] = NCCL_VERSION_TAG
+        config['NCCL_VERSION_TAG'] = NCCL_VERSION_TAG
         FOLDER_ROOT = f"{task0.homedir}/nccl/nccl-{NCCL_VERSION_TAG}"
-        info['FOLDER_ROOT'] = FOLDER_ROOT
+        config['FOLDER_ROOT'] = FOLDER_ROOT
         NCCL_HOME = f'{FOLDER_ROOT}/nccl/build'
-        info['NCCL_HOME'] = NCCL_HOME
+        config['NCCL_HOME'] = NCCL_HOME
         EFA_HOME = f'/opt/amazon/efa'
-        info['EFA_HOME'] = EFA_HOME
+        config['EFA_HOME'] = EFA_HOME
 
         # sanity check, simple mpirun that will print hostnames
         task0.run(f'{MPI_HOME}/bin/mpirun --host {host_str} hostname')
@@ -199,7 +199,7 @@ def launcher():
                f'{CUDA_HOME}/lib64:'
                f'{EFA_HOME}/lib64:'
                f'{MPI_HOME}/lib:$LD_LIBRARY_PATH '
-               f'-x NCCL_DEBUG=INFO '  # print NCCL version info
+               f'-x NCCL_DEBUG=INFO '  # print NCCL version config
                f'-x NCCL_TREE_THRESHOLD=0 '  # Disable tree-algorithm, faster for <8 instances
                f'--host {host_str} '
                f'--mca btl tcp,self --mca btl_tcp_if_exclude lo,docker0 '
@@ -208,8 +208,9 @@ def launcher():
                f'{FOLDER_ROOT}/nccl-tests/build/all_reduce_perf -b 8 -e {SIZE_MB}M -f 2 -g 1 -c 1 ')
 
         # assume we didn't change directory from ~
-        pickled_info = util.text_pickle(info)
-        task0.run(f'python {__file__} --internal_role=worker --internal_cmd={shlex.quote(cmd)} --internal_info={pickled_info}')
+
+        pickled_config = util.text_pickle(config)
+        task0.run(f'python {__file__} --internal_role=worker --internal_cmd={shlex.quote(cmd)} --internal_config={pickled_config}')
 
     else:
         print("Running Ethernet test")
@@ -240,6 +241,7 @@ def launcher():
                   f'{FOLDER_ROOT}/nccl-tests/build/all_reduce_perf -b {SIZE_MB}M -e {SIZE_MB}M -f 2 ')
 
     print(task0.output)
+
 
 def ossystem_with_pipe(cmd: str, out_fn: str):
     # like os.system(cmd+' | tee > out_fn') but gets around unbuffering restrictions on pipe
@@ -304,23 +306,23 @@ def make_readable(d, prefix: str) -> Dict[str, float]:
     return d
 
 
-
 def worker():
     """Runs benchmark locally on AWS and logs results."""
     
     import wandb
     
     # log info propagated from the launcher
-    info = util.text_unpickle(args.internal_info)
+    config = util.text_unpickle(args.internal_config)
     
     num_gpus = 8*args.num_tasks
-    efa_str = 'efa' if info['do_efa'] else 'eth'
-    patch_str = 'patched' if info['ofi_patch'] else 'stock'
+    efa_str = 'efa' if config['do_efa'] else 'eth'
+    patch_str = 'patched' if config['ofi_patch'] else 'stock'
     name = f"bench-{num_gpus}-{efa_str}-{patch_str}"
     wandb.init(project='nccl_multiversion', name=name)
 
-    if info:
-        wandb.log(info)
+    if config:
+        pass
+    #        wandb.log(info)
 
     print("Running command:")
     print(args.internal_cmd)
