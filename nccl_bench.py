@@ -52,13 +52,15 @@ parser.add_argument('--internal_config_fn', type=str, default='config_dict', hel
 args = parser.parse_args()
 
 SETUP_COMLETED_FN = 'setup_completed'
-
+HOSTS_SLOTS_FN = 'hosts.slots'
 
 def launcher():
     from ncluster import aws_util as u
     import ncluster
 
+    config = {}
     job = ncluster.make_job(**vars(args))
+    task0 = job.tasks[0]
     job.propagate_env(['WANDB_API_KEY'])
     job.rsync('.')
     job.run('pip install -r worker_requirements.txt')  # things needed for worker()
@@ -105,12 +107,11 @@ def launcher():
     else:
         print(f"{SETUP_COMLETED_FN} found, skipping setup")
 
-    # launch MPI
+    # create arguments for --hosts {host_str} and --hostfile {HOSTS_SLOTS_FN}
     hosts = [task.ip for task in job.tasks]
     host_str = ','.join(hosts)
-
-
-    task0 = job.tasks[0]
+    hosts_file_lines = [f'{host} slots=8 max-slots=8' for host in hosts]
+    task0.write(HOSTS_SLOTS_FN, '\n'.join(hosts_file_lines))
 
     #    nccl_version_tag = '2.4.7'
     #    nccl_version_tag = '2.3.7'
@@ -120,9 +121,8 @@ def launcher():
     MPI_HOME = f'{task0.homedir}/anaconda3'
     NUM_GPUS = 16
     NPER_NODE = NUM_GPUS // 2
-    SIZE_MB = 256 #4096
+    SIZE_MB = 256  # 4096
 
-    config = {}
     config['CUDA_HOME'] = CUDA_HOME
     config['MPI_HOME'] = MPI_HOME
     config['NUM_GPUS'] = NUM_GPUS
@@ -137,92 +137,98 @@ def launcher():
     config['launch_user'] = os.environ.get('USER', '')
     config['cmd'] = ' '.join(sys.argv)
     config['launcher_conda'] = util.ossystem('echo ${CONDA_PREFIX:-"$(dirname $(which conda))/../"}')
-
+    
     if args.ofi_patch:
         config['ofi_patch_hash'] = hash(open(args.ofi_patch).read())
     
     config.update(vars(args))
 
     if args.do_efa:
-        if args.ofi_patch:
-            assert os.path.exists(args.ofi_patch)
-            job.upload(args.ofi_patch)
-            config['ofi_patch'] = True
-        else:
-            config['ofi_patch'] = False
-            # delete patch file if present from previous run
-            job.run(f'rm -f aws-ofi-nccl.patch')
-        
-        if not job.tasks[0].exists(SETUP_COMLETED_FN) or args.force_rebuild:
-            config['fresh_build'] = True
+        FI_PROVIDER = 'efa'
+    else:
+        FI_PROVIDER = 'old'    # this is undefined, so mpirun will fall back to default behavior
+    config['network'] = FI_PROVIDER
 
-            # install rdma core and libibverbs
-            job.run('wget http://mirror.centos.org/centos/6/os/x86_64/Packages/rdma-6.9_4.1-3.el6.noarch.rpm')
-            job.run('sudo yum install -y rdma-6.9_4.1-3.el6.noarch.rpm')
 
-            job.run('wget http://mirror.centos.org/centos/6/os/x86_64/Packages/libibverbs-1.1.8-4.el6.x86_64.rpm')
-            job.run('sudo yum install -y ./libibverbs-1.1.8-4.el6.x86_64.rpm')
+    if args.ofi_patch:
+        assert os.path.exists(args.ofi_patch)
+        job.upload(args.ofi_patch)
+        config['ofi_patch'] = True
+    else:
+        config['ofi_patch'] = False
+        # delete patch file if present from previous run
+        job.run(f'rm -f aws-ofi-nccl.patch')
 
-        # check that ib_uverbs are loaded, and load them if not
-        # Also make sure that EFA provider is available
-        for task in job.tasks:
-            task.run('/usr/sbin/lsmod')
-            if 'verbs' not in task.output:
-                task.run('sudo /usr/sbin/modprobe ib_uverbs')
-            task.run('/usr/sbin/lsmod')
-            assert 'verbs' in task.output
+    if not job.tasks[0].exists(SETUP_COMLETED_FN) or args.force_rebuild:
+        config['fresh_build'] = True
 
-            task.run('/opt/amazon/efa/bin/fi_info -p efa')
-            assert 'provider: efa' in task.output
+        # install rdma core and libibverbs
+        job.run('wget http://mirror.centos.org/centos/6/os/x86_64/Packages/rdma-6.9_4.1-3.el6.noarch.rpm')
+        job.run('sudo yum install -y rdma-6.9_4.1-3.el6.noarch.rpm')
 
-        if not job.tasks[0].exists(SETUP_COMLETED_FN) or args.force_rebuild:
-            # install rdma core and libibverbs
-            job.run('wget http://mirror.centos.org/centos/6/os/x86_64/Packages/rdma-6.9_4.1-3.el6.noarch.rpm')
-            job.run('sudo yum install -y rdma-6.9_4.1-3.el6.noarch.rpm')
+        job.run('wget http://mirror.centos.org/centos/6/os/x86_64/Packages/libibverbs-1.1.8-4.el6.x86_64.rpm')
+        job.run('sudo yum install -y ./libibverbs-1.1.8-4.el6.x86_64.rpm')
 
-            job.run('wget http://mirror.centos.org/centos/6/os/x86_64/Packages/libibverbs-1.1.8-4.el6.x86_64.rpm')
-            job.run('sudo yum install -y ./libibverbs-1.1.8-4.el6.x86_64.rpm')
-        job.tasks[0].write(SETUP_COMLETED_FN, 'ok')  # end of EFA setup
+    # check that ib_uverbs are loaded, and load them if not
+    # Also make sure that EFA provider is available
+    for task in job.tasks:
+        task.run('/usr/sbin/lsmod')
+        if 'verbs' not in task.output:
+            task.run('sudo /usr/sbin/modprobe ib_uverbs')
+        task.run('/usr/sbin/lsmod')
+        assert 'verbs' in task.output
 
-        print("Running EFA test")
-        NCCL_VERSION_TAG = '2.4.6'
-        config['NCCL_VERSION_TAG'] = NCCL_VERSION_TAG
-        FOLDER_ROOT = f"{task0.homedir}/nccl/nccl-{NCCL_VERSION_TAG}"
-        config['FOLDER_ROOT'] = FOLDER_ROOT
-        NCCL_HOME = f'{FOLDER_ROOT}/nccl/build'
-        config['NCCL_HOME'] = NCCL_HOME
-        EFA_HOME = f'/opt/amazon/efa'
-        config['EFA_HOME'] = EFA_HOME
+        task.run('/opt/amazon/efa/bin/fi_info -p efa')
+        assert 'provider: efa' in task.output
 
-        # sanity check, simple mpirun that will print hostnames
-        task0.run(f'{MPI_HOME}/bin/mpirun --host {host_str} hostname')
+    if not job.tasks[0].exists(SETUP_COMLETED_FN) or args.force_rebuild:
+        # install rdma core and libibverbs
+        job.run('wget http://mirror.centos.org/centos/6/os/x86_64/Packages/rdma-6.9_4.1-3.el6.noarch.rpm')
+        job.run('sudo yum install -y rdma-6.9_4.1-3.el6.noarch.rpm')
 
-        # Run through EFA on 2 gpus/2 machines
-        cmd = (f'{MPI_HOME}/bin/mpirun '
-               f' -n {NUM_GPUS} -N {NPER_NODE} '
-               f'-x FI_PROVIDER="efa" '  # Enables running nccl-tests using EFA provider.
-               f'-x FI_OFI_RXR_RX_COPY_UNEXP=1 '  #  Disables using bounce buffers for unexpected messages.
-               f'-x FI_OFI_RXR_RX_COPY_OOO=1 '  # Disables using bounce buffers for out of order messages.
-               f'-x FI_EFA_MR_CACHE_ENABLE=1 '  # Enables memory region caching.
-               f'-x FI_OFI_RXR_INLINE_MR_ENABLE=1 '  # Enables inline memory registration of data buffers.
-               f'-x LD_LIBRARY_PATH='
-               f'{FOLDER_ROOT}/aws-ofi-nccl/install/lib/:'
-               f'{NCCL_HOME}/lib:'
-               f'{CUDA_HOME}/lib64:'
-               f'{EFA_HOME}/lib64:'
-               f'{MPI_HOME}/lib:$LD_LIBRARY_PATH '
-               f'-x NCCL_DEBUG=INFO '  # print NCCL version config
-               f'-x NCCL_TREE_THRESHOLD=0 '  # Disable tree-algorithm, faster for <8 instances
-               f'--host {host_str} '
-               f'--mca btl tcp,self --mca btl_tcp_if_exclude lo,docker0 '
-               f'--bind-to none '
-               f'--oversubscribe '  # https://github.com/NVIDIA/nccl-tests/issues/21
-               f'{FOLDER_ROOT}/nccl-tests/build/all_reduce_perf -b 8 -e {SIZE_MB}M -f 2 -g 1 -c 1 ')
+        job.run('wget http://mirror.centos.org/centos/6/os/x86_64/Packages/libibverbs-1.1.8-4.el6.x86_64.rpm')
+        job.run('sudo yum install -y ./libibverbs-1.1.8-4.el6.x86_64.rpm')
+    job.tasks[0].write(SETUP_COMLETED_FN, 'ok')  # end of EFA setup
 
-        # assume we didn't change directory from ~
-        pickled_config = util.text_pickle(config)
-        task0.write(args.internal_config_fn, pickled_config)
-        task0.run(f'python {__file__} --internal_role=worker --internal_cmd={shlex.quote(cmd)}')
+    print("Running EFA test")
+    NCCL_VERSION_TAG = '2.4.6'
+    config['NCCL_VERSION_TAG'] = NCCL_VERSION_TAG
+    FOLDER_ROOT = f"{task0.homedir}/nccl/nccl-{NCCL_VERSION_TAG}"
+    config['FOLDER_ROOT'] = FOLDER_ROOT
+    NCCL_HOME = f'{FOLDER_ROOT}/nccl/build'
+    config['NCCL_HOME'] = NCCL_HOME
+    EFA_HOME = f'/opt/amazon/efa'
+    config['EFA_HOME'] = EFA_HOME
+
+    # sanity check, simple mpirun that will print hostnames
+    task0.run(f'{MPI_HOME}/bin/mpirun --host {host_str} hostname')
+
+    # Run through EFA on 2 gpus/2 machines
+    #        f'--oversubscribe '  # https://github.com/NVIDIA/nccl-tests/issues/21
+
+    cmd = (f'{MPI_HOME}/bin/mpirun '
+           f' -n {NUM_GPUS} -N {NPER_NODE} --hostfile {HOSTS_SLOTS_FN} '
+           f'-x FI_PROVIDER="{FI_PROVIDER}" '  # Enables running nccl-tests using EFA provider.
+           f'-x FI_OFI_RXR_RX_COPY_UNEXP=1 '  #  Disables using bounce buffers for unexpected messages.
+           f'-x FI_OFI_RXR_RX_COPY_OOO=1 '  # Disables using bounce buffers for out of order messages.
+           f'-x FI_EFA_MR_CACHE_ENABLE=1 '  # Enables memory region caching.
+           f'-x FI_OFI_RXR_INLINE_MR_ENABLE=1 '  # Enables inline memory registration of data buffers.
+           f'-x LD_LIBRARY_PATH='
+           f'{FOLDER_ROOT}/aws-ofi-nccl/install/lib/:'
+           f'{NCCL_HOME}/lib:'
+           f'{CUDA_HOME}/lib64:'
+           f'{EFA_HOME}/lib64:'
+           f'{MPI_HOME}/lib:$LD_LIBRARY_PATH '
+           f'-x NCCL_DEBUG=INFO '  # print NCCL version config
+           f'-x NCCL_TREE_THRESHOLD=0 '  # Disable tree-algorithm, faster for <8 instances
+           f'--mca btl tcp,self --mca btl_tcp_if_exclude lo,docker0 '
+           f'--bind-to none '
+           f'{FOLDER_ROOT}/nccl-tests/build/all_reduce_perf -b 8 -e {SIZE_MB}M -f 2 -g 1 -c 1 ')
+
+    # assume we didn't change directory from ~
+    pickled_config = util.text_pickle(config)
+    task0.write(args.internal_config_fn, pickled_config)
+    task0.run(f'python {__file__} --internal_role=worker --internal_cmd={shlex.quote(cmd)}')
 
     print(task0.output)
 
@@ -236,11 +242,9 @@ def worker():
     config = util.text_unpickle(open(args.internal_config_fn).read())
     config['worker_conda'] = util.ossystem('echo ${CONDA_PREFIX:-"$(dirname $(which conda))/../"}')
 
-    
     num_gpus = 8*args.num_tasks
-    efa_str = 'efa' if config['do_efa'] else 'eth'
     patch_str = 'patched' if config['ofi_patch'] else 'stock'
-    name = f"bench-{num_gpus}-{efa_str}-{patch_str}"
+    name = f"bench-{num_gpus}-{config['network']}-{patch_str}"
     wandb.init(project='nccl_bench', name=name)
 
     # record run config parameters
