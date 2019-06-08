@@ -8,3 +8,5 @@ inspectionProfiles
 __pycache__
 /.idea/codeStyles
 /.DS_Store
+/.idea/other.xml
+/wandb

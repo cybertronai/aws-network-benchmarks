@@ -23,6 +23,9 @@ import os
 import shlex
 
 import re
+import subprocess
+import sys
+from typing import Tuple, Dict
 
 import util
 
@@ -238,9 +241,75 @@ def launcher():
 
     print(task0.output)
 
+def ossystem_with_pipe(cmd: str, out_fn: str):
+    # like os.system(cmd+' | tee > out_fn') but gets around unbuffering restrictions on pipe
+
+    env = os.environ.copy()
+    with open(out_fn, 'wb') as f:
+        process = subprocess.Popen(cmd,
+                                   shell=True, # command may contain $vars
+                                   stderr=subprocess.STDOUT,
+                                   stdout=subprocess.PIPE,
+                                   env=env)
+        for line in iter(process.stdout.readline, b''):
+            sys.stdout.write(line.decode(sys.stdout.encoding))
+            sys.stdout.flush()
+            f.write(line)
+
+
+G = 1073741824
+M = 1048576
+K = 1024
+
+keys = [64 * K, M, 16 * M, 64 * M, 256 * M, G, 2 * G, 4 * G]
+key_names = ['64K', 'M', '16M', '64M', '256M', 'G', '2G', '4G']
+
+
+#       size         count    type   redop     time   algbw   busbw  error     time   algbw   busbw  error
+#
+def parse_nccl_output(fn) -> Tuple[Dict[int, float], Dict[int, float]]:
+    alg_bw = {}
+    bus_bw = {}
+    output_started = False
+    for line in open(fn):
+        line = line.strip()
+        if not line:
+            continue
+        if not len(line.split()) == 12:
+            continue
+        toks = line.split()
+        if 'size' in toks and 'time' in toks and 'busbw' in toks:
+            output_started = True
+            continue
+
+        if not output_started:
+            continue
+
+        size = int(toks[0])
+        if size in keys:
+            alg_bw[size] = float(toks[9])
+            bus_bw[size] = float(toks[10])
+    return alg_bw, bus_bw
+
+
+def make_readable(d, prefix: str) -> Dict[str, float]:
+    """Translates size keys into easier to read labels, ie 1073741824 to 1G"""
+
+    key_name_map = dict(zip(key_names, keys))
+
+    readable_map = {}
+    for name in key_names:
+        if key_name_map[name] in d:
+            readable_map[prefix+name] = d[key_name_map[name]]
+    return d
+
+
 
 def worker():
+    """Runs benchmark locally on AWS and logs results."""
+    
     import wandb
+    
     # log info propagated from the launcher
     info = util.text_unpickle(args.internal_info)
     
@@ -255,17 +324,16 @@ def worker():
 
     print("Running command:")
     print(args.internal_cmd)
-    with util.capture_stdout() as outfile:
-        os.system(args.internal_cmd)
 
+    output_fn = 'output'
+    ossystem_with_pipe(args.internal_cmd, output_fn)
+    out = open(output_fn).read()
+    
     # print logs so they show up in console
-    out: str = outfile.getvalue()
-    print(out)
     r = re.compile('Avg bus bandwidth.+?:.([1-9.]+)')
     groups = r.findall(out)
     assert len(groups) == 1, f"Couldn't match output: {out}"
     wandb.log({"avg_bus_bandwidth": float(groups[0])})
-    float(groups[0])
 
 
 def main():
