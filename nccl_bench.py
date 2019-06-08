@@ -28,7 +28,7 @@ import parse_nccltest_output
 import util
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--name', type=str, default='nccl_multiversion')
+parser.add_argument('--name', type=str, default='nccl_bench')
 parser.add_argument('--instance_type', type=str, default="p3dn.24xlarge")
 parser.add_argument('--num_tasks', type=int, default=2, help="number of nodes")
 parser.add_argument('--spot', action='store_true', help='use spot instances')
@@ -42,7 +42,7 @@ parser.add_argument('--do_efa', type=int, default=-1, help="whether to test EFA 
 # default=os.environ['HOME']+'/Downloads/aws-ofi-nccl.patch'
 parser.add_argument('--ofi_patch', type=str, default='', help='local location of patch to apply to aws-ofi install')
 
-# internal flag
+# internal flags
 parser.add_argument('--internal_role', type=str, default='launcher')
 parser.add_argument('--internal_cmd', type=str, default='echo whoami')
 parser.add_argument('--internal_config', type=str, default='800358020000007B7D71002E', help='base16 encoded dict of additional config attributes to log')
@@ -108,6 +108,7 @@ def launcher():
     # launch MPI
     hosts = [task.ip for task in job.tasks]
     host_str = ','.join(hosts)
+
 
     task0 = job.tasks[0]
 
@@ -219,38 +220,9 @@ def launcher():
                f'{FOLDER_ROOT}/nccl-tests/build/all_reduce_perf -b 8 -e {SIZE_MB}M -f 2 -g 1 -c 1 ')
 
         # assume we didn't change directory from ~
-
         pickled_config = util.text_pickle(config)
         task0.write(args.internal_config_fn, pickled_config)
         task0.run(f'python {__file__} --internal_role=worker --internal_cmd={shlex.quote(cmd)}')
-
-    else:
-        print("Running Ethernet test")
-        #  MPI_HOME = '/usr/local/mpi'  # for DLAMI 22
-        job.run('export NCCL_MIN_NRINGS=16')  # TODO: move into -x
-        # NCCL_VERSION_TAG = '2.3.7' this fails with nccl-test trying to open libmpi.so.40
-        NCCL_VERSION_TAG = '2.4.6'
-        # fails with [ip-172-31-48-152][[16356,1],5][btl_tcp_endpoint.c:626:mca_btl_tcp_endpoint_recv_connect_ack] received unexpected process identifier [[16356,1],6]
-        # [ip-172-31-48-152][[16356,1],2][btl_tcp_endpoint.c:626:mca_btl_tcp_endpoint_recv_connect_ack] received unexpected process identifier [[16356,1],5]
-
-        FOLDER_ROOT = f"{task0.homedir}/nccl/nccl-{NCCL_VERSION_TAG}"
-        NCCL_HOME = f'{FOLDER_ROOT}/nccl/build'
-        SIZE_MB = 256
-
-        #  about -oversubscribe https://github.com/NVIDIA/nccl-tests/issues/21
-
-        task0.run(f'{MPI_HOME}/bin/mpirun --host {host_str} '
-                  f'-np {NUM_GPUS} -N {NPER_NODE} '
-                  f'-mca btl ^openib '  # get rid of no infiniband warning '
-                  f'-mca orte_base_help_aggregate 0 '   # more logging messages
-                  # f'-mca oob_tcp_if_include ens5 -mca btl_tcp_if_include ens5 ' # force ens5 (only use on p3dn + Ethernet)
-                  f'-x LD_LIBRARY_PATH='
-                  f'{NCCL_HOME}/lib:'
-                  f'{CUDA_HOME}/lib64:'
-                  f'{MPI_HOME}/lib:$LD_LIBRARY_PATH '
-                  f'-oversubscribe '  # for "There are not enough slots" error
-                  f'{FOLDER_ROOT}/nccl-tests/build/all_reduce_perf -b 8 -e 1M -f 2 -g 1 -c 1 -n {NUM_GPUS} '
-                  f'{FOLDER_ROOT}/nccl-tests/build/all_reduce_perf -b {SIZE_MB}M -e {SIZE_MB}M -f 2 ')
 
     print(task0.output)
 
@@ -269,7 +241,7 @@ def worker():
     efa_str = 'efa' if config['do_efa'] else 'eth'
     patch_str = 'patched' if config['ofi_patch'] else 'stock'
     name = f"bench-{num_gpus}-{efa_str}-{patch_str}"
-    wandb.init(project='nccl_multiversion', name=name)
+    wandb.init(project='nccl_bench', name=name)
 
     # record run config parameters
     print(config)
@@ -279,7 +251,7 @@ def worker():
 
     for key in os.environ:
         if re.match(r"^NCCL|CUDA|PATH|^LD|USER|PWD", key):
-            wandb.config[key] = os.getenv(key)
+            wandb.config['env_'+key] = os.getenv(key)
 
     print("Running command:")
     print(args.internal_cmd)
