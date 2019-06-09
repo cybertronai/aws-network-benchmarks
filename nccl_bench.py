@@ -130,7 +130,7 @@ def launcher():
     CUDA_HOME = f'/usr/local/cuda-10.0'
     MPI_HOME = f'{task0.homedir}/anaconda3'
     NUM_GPUS = 8*args.num_tasks
-    NPER_NODE = NUM_GPUS // 2
+    NPER_NODE = 8
     SIZE_MB = 4096
 
     config['CUDA_HOME'] = CUDA_HOME
