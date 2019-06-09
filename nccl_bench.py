@@ -39,8 +39,8 @@ parser.add_argument('--image_name', type=str, default='dlami23-efa', help="Image
 parser.add_argument('--force_rebuild', type=int, default=0, help="ignore previously build artifacts and rebuild from scratch")
 parser.add_argument('--do_efa', type=int, default=-1, help="whether to test EFA setup. If left at -1, determined automatically from instance type.")
 
-# default=os.environ['HOME']+'/Downloads/aws-ofi-nccl.patch'
-parser.add_argument('--ofi_patch', type=str, default='', help='local location of patch to apply to aws-ofi install')
+parser.add_argument('--ofi_patch', type=int, default=0, help='whether to apply patch to aws-ofi install')
+parser.add_argument('--ofi_patch_location', type=str, default=os.environ['HOME']+'/Downloads/aws-ofi-nccl.patch', help='location of patch to apply to aws-ofi install')
 
 # internal flags
 parser.add_argument('--internal_role', type=str, default='launcher')
@@ -139,7 +139,8 @@ def launcher():
     config['launcher_conda'] = util.ossystem('echo ${CONDA_PREFIX:-"$(dirname $(which conda))/../"}')
     
     if args.ofi_patch:
-        config['ofi_patch_hash'] = hash(open(args.ofi_patch).read())
+        assert os.path.exists(args.ofi_patch_location), "OFI patch not found at {args.ofi_patch_location}"
+        config['ofi_patch_hash'] = hash(open(args.ofi_patch_location).read())
     
     config.update(vars(args))
 
@@ -151,8 +152,8 @@ def launcher():
 
 
     if args.ofi_patch:
-        assert os.path.exists(args.ofi_patch)
-        job.upload(args.ofi_patch)
+        assert os.path.exists(args.ofi_patch_location)
+        job.upload(args.ofi_patch_location)
         config['ofi_patch'] = True
     else:
         config['ofi_patch'] = False
