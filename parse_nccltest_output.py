@@ -39,7 +39,11 @@ def parse(fn) -> Tuple[Dict[int, float], Dict[int, float], float]:
         if line.startswith('#') or len(toks) != 12:
             continue
 
-        size = int(toks[0])
+        # other threads can write to stdout
+        try:
+            size = int(toks[0])
+        except Exception as e:
+            continue
         if size in keys:
             alg_bw[size] = float(toks[9])*8
             bus_bw[size] = float(toks[10])*8

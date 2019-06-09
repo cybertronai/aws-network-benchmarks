@@ -186,10 +186,10 @@ def launcher():
     if not job.tasks[0].exists(SETUP_COMLETED_FN) or args.force_rebuild:
         # install rdma core and libibverbs
         job.run('wget http://mirror.centos.org/centos/6/os/x86_64/Packages/rdma-6.9_4.1-3.el6.noarch.rpm')
-        job.run('sudo yum install -y rdma-6.9_4.1-3.el6.noarch.rpm')
+        #        job.run('sudo yum install -y rdma-6.9_4.1-3.el6.noarch.rpm')
 
         job.run('wget http://mirror.centos.org/centos/6/os/x86_64/Packages/libibverbs-1.1.8-4.el6.x86_64.rpm')
-        job.run('sudo yum install -y ./libibverbs-1.1.8-4.el6.x86_64.rpm')
+        #        job.run('sudo yum install -y ./libibverbs-1.1.8-4.el6.x86_64.rpm')
     job.tasks[0].write(SETUP_COMLETED_FN, 'ok')  # end of EFA setup
 
     print("Running EFA test")
