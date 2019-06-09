@@ -129,7 +129,7 @@ def launcher():
 
     CUDA_HOME = f'/usr/local/cuda-10.0'
     MPI_HOME = f'{task0.homedir}/anaconda3'
-    NUM_GPUS = 16
+    NUM_GPUS = 8*args.num_tasks
     NPER_NODE = NUM_GPUS // 2
     SIZE_MB = 4096
 
@@ -147,6 +147,7 @@ def launcher():
     config['launch_user'] = os.environ.get('USER', '')
     config['cmd'] = ' '.join(sys.argv)
     config['launcher_conda'] = util.ossystem('echo ${CONDA_PREFIX:-"$(dirname $(which conda))/../"}')
+    config['num_gpus'] = NUM_GPUS
     
     if args.ofi_patch:
         assert os.path.exists(args.ofi_patch_location), "OFI patch not found at {args.ofi_patch_location}"
@@ -243,8 +244,10 @@ def worker():
     config = util.text_unpickle(open(args.internal_config_fn).read())
     config['worker_conda'] = util.ossystem('echo ${CONDA_PREFIX:-"$(dirname $(which conda))/../"}')
 
-    num_gpus = 8*args.num_tasks
+    num_gpus = config['num_gpus']
     patch_str = 'patched' if config['ofi_patch'] else 'stock'
+    if config.get('ofi_patch_fixed', ''):
+        patch_str = 'patchfix'
     name = f"bench-{num_gpus}-{config['network']}-{patch_str}"
     wandb.init(project='nccl_bench', name=name)
 
