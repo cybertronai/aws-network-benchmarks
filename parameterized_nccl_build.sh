@@ -98,7 +98,7 @@ if [ -f "$HOME/aws-ofi-nccl.patch" ]; then
     echo "using ~/aws-ofi-nccl.patch version of aws-ofi-nccl"
     # git apply fails with "patch does not apply", use patch command instead
     #    git apply ~/aws-ofi-nccl.patch
-    patch -p1 < ~/aws-ofi-nccl.patch
+    patch -p1 < $HOME/aws-ofi-nccl.patch
 else
     echo "$logtag using master version of aws-ofi-nccl"
     #    git apply ~/aws-ofi-nccl.patch

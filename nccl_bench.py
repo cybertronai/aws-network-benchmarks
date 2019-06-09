@@ -54,6 +54,7 @@ args = parser.parse_args()
 SETUP_COMLETED_FN = 'setup_completed'
 HOSTS_SLOTS_FN = 'hosts.slots'
 
+
 def launcher():
     from ncluster import aws_util as u
     import ncluster
@@ -72,6 +73,15 @@ def launcher():
             args.do_efa = 1
         else:
             args.do_efa = 0
+
+    if args.ofi_patch:
+        assert os.path.exists(args.ofi_patch_location)
+        job.upload(args.ofi_patch_location)
+        config['ofi_patch_fixed'] = True
+    else:
+        config['ofi_patch_fixed'] = False
+        # delete patch file if present from previous run
+        job.run(f'rm -f aws-ofi-nccl.patch')
 
     if not job.tasks[0].exists(SETUP_COMLETED_FN) or args.force_rebuild:
         # build nccl versions
@@ -149,16 +159,6 @@ def launcher():
     else:
         FI_PROVIDER = 'old'    # this is undefined, so mpirun will fall back to default behavior
     config['network'] = FI_PROVIDER
-
-
-    if args.ofi_patch:
-        assert os.path.exists(args.ofi_patch_location)
-        job.upload(args.ofi_patch_location)
-        config['ofi_patch'] = True
-    else:
-        config['ofi_patch'] = False
-        # delete patch file if present from previous run
-        job.run(f'rm -f aws-ofi-nccl.patch')
 
     if not job.tasks[0].exists(SETUP_COMLETED_FN) or args.force_rebuild:
         config['fresh_build'] = True
