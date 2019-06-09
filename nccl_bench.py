@@ -121,7 +121,7 @@ def launcher():
     MPI_HOME = f'{task0.homedir}/anaconda3'
     NUM_GPUS = 16
     NPER_NODE = NUM_GPUS // 2
-    SIZE_MB = 256  # 4096
+    SIZE_MB = 4096
 
     config['CUDA_HOME'] = CUDA_HOME
     config['MPI_HOME'] = MPI_HOME
