@@ -7,15 +7,12 @@ pip install -r https://raw.githubusercontent.com/cybertronai/aws-network-benchma
 
 export AWS_ACCESS_KEY_ID=<access key id>
 export AWS_SECRET_ACCESS_KEY=<secret key>
-export AWS_DEFAULT_REGION=<one of us-east-1, us-west-2, eu-west-1>
-
-# to test EFA
+export AWS_DEFAULT_REGION=us-east-1
 export NCLUSTER_ZONE=us-east-1b
-python nccl_multiversion.py --instance_type=p3dn.24xlarge --name=nccl-efa --image_name='dlami23-efa'
+Save AWS's patch to aws-ofi-nccl package into ~/Downloads/aws-ofi-nccl.patch
 
-# to test Ethernet
-python nccl_multiversion.py --instance_type=p3.16xlarge --name=nccl-ethernet --image_name='Deep Learning AMI (Ubuntu) Version 22.0'
-
+Then:
+python nccl_bench.py
 """
 
 import argparse
