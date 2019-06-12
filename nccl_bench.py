@@ -32,12 +32,13 @@ parser.add_argument('--spot', action='store_true', help='use spot instances')
 parser.add_argument('--skip_setup', action='store_true',
                     help='can use this option on reruns for slightly faster turn-around')
 parser.add_argument('--image_name', type=str, default='dlami23-efa', help="Image to use for this run. dlami23-efa was image created by taking DLAMI 23 Amazon version, and installing extra packages in https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/efa-start.html")
-
+parser.add_argument('--size_mb', type=int, default=1024, help="largest size of allreduce to test")
 parser.add_argument('--force_rebuild', type=int, default=0, help="ignore previously build artifacts and rebuild from scratch")
 parser.add_argument('--do_efa', type=int, default=-1, help="whether to test EFA setup. If left at -1, determined automatically from instance type.")
 
-parser.add_argument('--ofi_patch', type=int, default=0, help='whether to apply patch to aws-ofi install')
+parser.add_argument('--ofi_patch', type=int, default=1, help='whether to apply patch to aws-ofi install')
 parser.add_argument('--ofi_patch_location', type=str, default=os.environ['HOME']+'/Downloads/aws-ofi-nccl.patch', help='location of patch to apply to aws-ofi install')
+parser.add_argument('--nccl_version', type=str, default='2.4.6', help="2.4.6 or 2.4.7 or 2.4.7ms0")
 
 # internal flags
 parser.add_argument('--internal_role', type=str, default='launcher')
@@ -120,15 +121,11 @@ def launcher():
     hosts_file_lines = [f'{host} slots=8 max-slots=8' for host in hosts]
     task0.write(HOSTS_SLOTS_FN, '\n'.join(hosts_file_lines))
 
-    #    nccl_version_tag = '2.4.7'
-    #    nccl_version_tag = '2.3.7'
-    #    nccl_version_tag = '2.4.7ms0'
-
     CUDA_HOME = f'/usr/local/cuda-10.0'
     MPI_HOME = f'{task0.homedir}/anaconda3'
     NUM_GPUS = 8*args.num_tasks
     NPER_NODE = 8
-    SIZE_MB = 4096
+    SIZE_MB = args.size_mb
 
     config['CUDA_HOME'] = CUDA_HOME
     config['MPI_HOME'] = MPI_HOME
@@ -144,6 +141,7 @@ def launcher():
     config['launch_user'] = os.environ.get('USER', '')
     config['cmd'] = ' '.join(sys.argv)
     config['launcher_conda'] = util.ossystem('echo ${CONDA_PREFIX:-"$(dirname $(which conda))/../"}')
+    config['launcher_cmd'] = 'python '+' '.join(sys.argv)
     config['num_gpus'] = NUM_GPUS
     
     if args.ofi_patch:
@@ -190,7 +188,7 @@ def launcher():
     job.tasks[0].write(SETUP_COMLETED_FN, 'ok')  # end of EFA setup
 
     print("Running EFA test")
-    NCCL_VERSION_TAG = '2.4.6'
+    NCCL_VERSION_TAG = args.nccl_version
     config['NCCL_VERSION_TAG'] = NCCL_VERSION_TAG
     FOLDER_ROOT = f"{task0.homedir}/nccl/nccl-{NCCL_VERSION_TAG}"
     config['FOLDER_ROOT'] = FOLDER_ROOT
