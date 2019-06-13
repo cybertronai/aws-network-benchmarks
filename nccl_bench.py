@@ -81,6 +81,7 @@ def launcher():
         # delete patch file if present from previous run
         job.run(f'rm -f aws-ofi-nccl.patch')
 
+    # chief task controls whether the rest of tasks get reinitialized
     if not job.tasks[0].exists(SETUP_COMLETED_FN) or args.force_rebuild:
         # build nccl versions
         def nccl_build(nccl_version_tag, gitcmd):
@@ -109,9 +110,7 @@ def launcher():
                 task2.run(f'echo "{public_keys[task1]}" >> ~/.ssh/authorized_keys',
                           non_blocking=True)
         
-        if args.do_efa == 0:
-            job.tasks[0].write(SETUP_COMLETED_FN, 'ok')  # end of no-EFA setup
-        job.tasks[0].write(SETUP_COMLETED_FN, '0')
+        job.tasks[0].write(SETUP_COMLETED_FN, 'ok')
     else:
         print(f"{SETUP_COMLETED_FN} found, skipping setup")
 
@@ -217,7 +216,7 @@ def launcher():
            f'{CUDA_HOME}/lib64:'
            f'{EFA_HOME}/lib64:'
            f'{MPI_HOME}/lib:$LD_LIBRARY_PATH '
-           f'-x NCCL_DEBUG=INFO '  # print NCCL version config
+           f'-x NCCL_DEBUG=VERSION '  # print NCCL version config
            f'--mca btl tcp,self --mca btl_tcp_if_exclude lo,docker0 '
            f'--bind-to none '
            f'{FOLDER_ROOT}/nccl-tests/build/all_reduce_perf -b 8 -e {SIZE_MB}M -f 2 -g 1 -c 1 -n 100')
