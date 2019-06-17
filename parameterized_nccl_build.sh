@@ -48,6 +48,10 @@ logtag="parameterized_nccl_build.sh: "
 
 pushd .
 
+sudo mv /usr/local/mpi /usr/local/mpi.removed  # catch things linking to wrong mpi
+# remove mpi from ld_library_path before building
+#export LD_LIBRARY_PATH=/lib/:/usr/lib:/usr/local/cuda-10.0/extras/CUPTI/lib64:/usr/local/cuda-10.0/lib:/usr/local/cuda-10.0/lib64:/usr/local/lib:/opt/amazon/efa/lib64
+
 if [ -z ${NCCL_VERSION_TAG+x} ]; then
     echo "$logtag Error: Must set NCCL_VERSION_TAG"
     exit

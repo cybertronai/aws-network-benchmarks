@@ -33,7 +33,7 @@ parser.add_argument('--skip_setup', action='store_true',
                     help='can use this option on reruns for slightly faster turn-around')
 parser.add_argument('--image_name', type=str, default='dlami23-efa', help="Image to use for this run. dlami23-efa was image created by taking DLAMI 23 Amazon version, and installing extra packages in https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/efa-start.html")
 parser.add_argument('--size_mb', type=int, default=1024, help="largest size of allreduce to test")
-parser.add_argument('--force_rebuild', type=int, default=0, help="ignore previously build artifacts and rebuild from scratch")
+parser.add_argument('--fresh_build', type=int, default=0, help="ignore previously build artifacts and rebuild from scratch")
 parser.add_argument('--do_efa', type=int, default=-1, help="whether to test EFA setup. If left at -1, determined automatically from instance type.")
 
 parser.add_argument('--ofi_patch', type=int, default=1, help='whether to apply patch to aws-ofi install')
@@ -62,6 +62,7 @@ def launcher():
     task0 = job.tasks[0]
     job.propagate_env(['WANDB_API_KEY'])
     job.rsync('.')
+    job.run('killall all_reduce_perf || echo nevermind') # kill previous run
     job.run('pip install -r worker_requirements.txt')  # things needed for worker()
 
     # choose EFA/no-EFA codepath based on instance-type, overridable by do_efa
@@ -82,7 +83,7 @@ def launcher():
         job.run(f'rm -f aws-ofi-nccl.patch')
 
     # chief task controls whether the rest of tasks get reinitialized
-    if not job.tasks[0].exists(SETUP_COMLETED_FN) or args.force_rebuild:
+    if not job.tasks[0].exists(SETUP_COMLETED_FN) or args.fresh_build:
         # build nccl versions
         def nccl_build(nccl_version_tag, gitcmd):
             job.run(f'export NCCL_VERSION_TAG="{nccl_version_tag}"')
@@ -154,17 +155,8 @@ def launcher():
     else:
         FI_PROVIDER = 'old'    # this is undefined, so mpirun will fall back to default behavior
     config['network'] = FI_PROVIDER
-
-    if not job.tasks[0].exists(SETUP_COMLETED_FN) or args.force_rebuild:
-        config['fresh_build'] = True
-
-        # install rdma core and libibverbs
-        job.run('wget http://mirror.centos.org/centos/6/os/x86_64/Packages/rdma-6.9_4.1-3.el6.noarch.rpm')
-        #        job.run('sudo yum install -y rdma-6.9_4.1-3.el6.noarch.rpm')
-
-        job.run('wget http://mirror.centos.org/centos/6/os/x86_64/Packages/libibverbs-1.1.8-4.el6.x86_64.rpm')
-        #        job.run('sudo yum install -y ./libibverbs-1.1.8-4.el6.x86_64.rpm')
-
+    config['fresh_build'] = args.fresh_build
+    
     # check that ib_uverbs are loaded, and load them if not
     # Also make sure that EFA provider is available
     for task in job.tasks:
@@ -177,13 +169,6 @@ def launcher():
         task.run('/opt/amazon/efa/bin/fi_info -p efa')
         assert 'provider: efa' in task.output
 
-    if not job.tasks[0].exists(SETUP_COMLETED_FN) or args.force_rebuild:
-        # install rdma core and libibverbs
-        job.run('wget http://mirror.centos.org/centos/6/os/x86_64/Packages/rdma-6.9_4.1-3.el6.noarch.rpm')
-        #        job.run('sudo yum install -y rdma-6.9_4.1-3.el6.noarch.rpm')
-
-        job.run('wget http://mirror.centos.org/centos/6/os/x86_64/Packages/libibverbs-1.1.8-4.el6.x86_64.rpm')
-        #        job.run('sudo yum install -y ./libibverbs-1.1.8-4.el6.x86_64.rpm')
     job.tasks[0].write(SETUP_COMLETED_FN, 'ok')  # end of EFA setup
 
     print("Running EFA test")
@@ -199,9 +184,6 @@ def launcher():
     # sanity check, simple mpirun that will print hostnames
     task0.run(f'{MPI_HOME}/bin/mpirun --host {host_str} hostname')
 
-    # Run through EFA on 2 gpus/2 machines
-    #        f'--oversubscribe '  # https://github.com/NVIDIA/nccl-tests/issues/21
-
     cmd = (f'{MPI_HOME}/bin/mpirun '
            f' -n {NUM_GPUS} -N {NPER_NODE} --hostfile {HOSTS_SLOTS_FN} '
            f'-x FI_PROVIDER="{FI_PROVIDER}" '  # Enables running nccl-tests using EFA provider.
@@ -210,6 +192,8 @@ def launcher():
            f'-x FI_EFA_MR_CACHE_ENABLE=1 '  # Enables memory region caching.
            f'-x FI_OFI_RXR_INLINE_MR_ENABLE=1 '  # Enables inline memory registration of data buffers.
            f'-x NCCL_TREE_THRESHOLD=4294967296 '
+           #           f'-x NCCL_TREE_THRESHOLD=0 '  # force ring algorithm
+           #           f'-x CUDA_VISIBLE_DEVICES=0,1,3,2,7,6,4,5 '
            f'-x LD_LIBRARY_PATH='
            f'{FOLDER_ROOT}/aws-ofi-nccl/install/lib/:'
            f'{NCCL_HOME}/lib:'
@@ -218,6 +202,7 @@ def launcher():
            f'{MPI_HOME}/lib:$LD_LIBRARY_PATH '
            f'-x NCCL_DEBUG=VERSION '  # print NCCL version config
            f'--mca btl tcp,self --mca btl_tcp_if_exclude lo,docker0 '
+           f'-mca orte_base_help_aggregate 0 '   # more logging messages
            f'--bind-to none '
            f'{FOLDER_ROOT}/nccl-tests/build/all_reduce_perf -b 8 -e {SIZE_MB}M -f 2 -g 1 -c 1 -n 100')
 
