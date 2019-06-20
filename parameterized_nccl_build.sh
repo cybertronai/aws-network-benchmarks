@@ -83,17 +83,17 @@ if [ -z ${GIT_CHECKOUT_CMD+x} ]; then
     exit
 fi
 
+if [ -z ${NCCL_REUSE_PREVIOUS_BUILD+x} ]; then
+    echo "NCCL_WIPE_PREVIOUS_BUILD is set, reusing previous build"
+    sudo rm -Rf $FOLDER_ROOT
+else
+    echo "NCCL_REUSE_PREVIOUS_BUILD is set, building from scratch"
+fi
 
 ################################################################################
 # NCCL
 ################################################################################
 
-if [ -z ${NCCL_WIPE_PREVIOUS_BUILD+x} ]; then
-    echo "NCCL_WIPE_PREVIOUS_BUILD not set, reusing previous build"
-else
-    echo "NCCL_WIPE_PREVIOUS_BUILD is set, building from scratch"
-    sudo rm -Rf $FOLDER_ROOT
-fi
 
 if [ -z ${GIT_CHECKOUT_CMD+x} ]; then
     GIT_CHECKOUT_CMD="skipping checkout"
@@ -167,6 +167,28 @@ cd nccl-tests
 
 
 LDFLAGS="-L/opt/amazon/efa/lib64" make MPI=1 MPI_HOME=$MPI_HOME CUDA_HOME=$CUDA_HOME NCCL_HOME=$NCCL_HOME
+
+################################################################################
+# PyTorch
+################################################################################
+
+echo "Installing PyTorch"
+mkdir -p $FOLDER_ROOT && cd $FOLDER_ROOT
+git clone --recursive https://github.com/pytorch/pytorch
+cd pytorch
+git fetch
+git checkout v1.1.0
+
+git clone https://github.com/NVIDIA/nccl-tests.git || echo "exists"
+cd nccl-tests
+
+source activate pytorch_p36
+export CMAKE_PREFIX_PATH=${CONDA_PREFIX:-"$(dirname $(which conda))/../"}
+export NCCL_ROOT_DIR=$FOLDER_ROOT/nccl
+
+rm -Rf build
+python setup.py install
+
 
 popd
 
