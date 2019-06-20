@@ -37,6 +37,7 @@ parser.add_argument('--internal_cmd', type=str, default='echo whoami')
 parser.add_argument('--internal_config', type=str, default='800358020000007B7D71002E', help='base16 encoded dict of additional config attributes to log')
 parser.add_argument('--internal_config_fn', type=str, default='config_dict', help='location of filename with extra info to log')
 
+SETUP_COMLETED_FN = 'setup_completed'
 
 args = parser.parse_args()
 
@@ -105,6 +106,9 @@ def worker():
     nccl_build('2.4.7', "git checkout v2.4.7-1")
     nccl_build('2.4.7ms0', "git checkout dev/kwen/multi-socket")
 
+
+    with open(SETUP_COMPLETED_FN, 'w') as f:
+        f.write('ok')
 
 
 def main():
