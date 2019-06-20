@@ -31,14 +31,15 @@ parser.add_argument('--num_tasks', type=int, default=2, help="number of nodes")
 parser.add_argument('--spot', action='store_true', help='use spot instances')
 parser.add_argument('--skip_setup', action='store_true',
                     help='can use this option on reruns for slightly faster turn-around')
-parser.add_argument('--image_name', type=str, default='dlami23-efa', help="Image to use for this run. dlami23-efa was image created by taking DLAMI 23 Amazon version, and installing extra packages in https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/efa-start.html")
+parser.add_argument('--image_name', type=str, default='dlami23-efa03', help="Image to use for this run. dlami23-efa was image created by taking DLAMI 23 Amazon version, and installing extra packages in https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/efa-start.html")
 parser.add_argument('--size_mb', type=int, default=1024, help="largest size of allreduce to test")
 parser.add_argument('--fresh_build', type=int, default=0, help="ignore previously build artifacts and rebuild from scratch")
+parser.add_argument('--skip_build', type=int, default=0, help="do not install anything")
 parser.add_argument('--do_efa', type=int, default=-1, help="whether to test EFA setup. If left at -1, determined automatically from instance type.")
 
 parser.add_argument('--ofi_patch', type=int, default=1, help='whether to apply patch to aws-ofi install')
 parser.add_argument('--ofi_patch_location', type=str, default=os.environ['HOME']+'/Downloads/aws-ofi-nccl.patch', help='location of patch to apply to aws-ofi install')
-parser.add_argument('--nccl_version', type=str, default='2.4.6', help="2.4.6 or 2.4.7 or 2.4.7ms0")
+parser.add_argument('--nccl_version', type=str, default='2.4.7ms0', help="2.4.6 or 2.4.7 or 2.4.7ms0")
 
 # internal flags
 parser.add_argument('--internal_role', type=str, default='launcher')
@@ -60,8 +61,8 @@ def launcher():
     config = {}
     job = ncluster.make_job(**vars(args))
     task0 = job.tasks[0]
-    job.propagate_env(['WANDB_API_KEY'])
     job.rsync('.')
+    print('created job3')
     job.run('killall all_reduce_perf || echo nevermind') # kill previous run
     job.run('pip install -r worker_requirements.txt')  # things needed for worker()
 
@@ -83,14 +84,16 @@ def launcher():
         job.run(f'rm -f aws-ofi-nccl.patch')
 
     # chief task controls whether the rest of tasks get reinitialized
-    if not job.tasks[0].exists(SETUP_COMLETED_FN) or args.fresh_build:
+    if not args.skip_build and (not job.tasks[0].exists(SETUP_COMLETED_FN) or args.fresh_build):
         # build nccl versions
         def nccl_build(nccl_version_tag, gitcmd):
+            job.run(f'export NCCL_WIPE_PREVIOUS_BUILD=1')
             job.run(f'export NCCL_VERSION_TAG="{nccl_version_tag}"')
             job.run(f'export GIT_CHECKOUT_CMD="{gitcmd}"')
-            job.run(f'source ~/parameterized_nccl_build.sh')
+            #            job.run(f'source ~/parameterized_nccl_build.sh')
+            job.run(f'bash ~/parameterized_nccl_build.sh')
 
-        nccl_build('2.3.7', "git checkout v2.3.7-1")
+            #        nccl_build('2.3.7', "git checkout v2.3.7-1")
         nccl_build('2.4.6', "git checkout v2.4.6-1")
         nccl_build('2.4.7', "git checkout v2.4.7-1")
         nccl_build('2.4.7ms0', "git checkout dev/kwen/multi-socket")
@@ -122,7 +125,9 @@ def launcher():
     task0.write(HOSTS_SLOTS_FN, '\n'.join(hosts_file_lines))
 
     CUDA_HOME = f'/usr/local/cuda-10.0'
-    MPI_HOME = f'{task0.homedir}/anaconda3'
+    EFA_HOME = f'/opt/amazon/efa'
+    #    MPI_HOME = f'{task0.homedir}/anaconda3'
+    MPI_HOME = EFA_HOME
     NUM_GPUS = 8*args.num_tasks
     NPER_NODE = 8
     SIZE_MB = args.size_mb
@@ -178,8 +183,11 @@ def launcher():
     config['FOLDER_ROOT'] = FOLDER_ROOT
     NCCL_HOME = f'{FOLDER_ROOT}/nccl/build'
     config['NCCL_HOME'] = NCCL_HOME
-    EFA_HOME = f'/opt/amazon/efa'
     config['EFA_HOME'] = EFA_HOME
+    job.run(f'export EFA_HOME={EFA_HOME}')
+    job.run(f'export MPI_HOME={MPI_HOME}')
+    job.run(f'export NCCL_HOME={NCCL_HOME}')
+
 
     # sanity check, simple mpirun that will print hostnames
     task0.run(f'{MPI_HOME}/bin/mpirun --host {host_str} hostname')
@@ -199,7 +207,7 @@ def launcher():
            f'{NCCL_HOME}/lib:'
            f'{CUDA_HOME}/lib64:'
            f'{EFA_HOME}/lib64:'
-           f'{MPI_HOME}/lib:$LD_LIBRARY_PATH '
+           f'{MPI_HOME}/lib:$LD_LIBRARY_PATH '  # todo: remove this
            f'-x NCCL_DEBUG=VERSION '  # print NCCL version config
            f'--mca btl tcp,self --mca btl_tcp_if_exclude lo,docker0 '
            f'-mca orte_base_help_aggregate 0 '   # more logging messages
@@ -227,7 +235,7 @@ def worker():
     patch_str = 'patched' if config['ofi_patch'] else 'stock'
     if config.get('ofi_patch_fixed', ''):
         patch_str = 'patchfix'
-    name = f"bench-{num_gpus}-{config['network']}-{patch_str}"
+    name = f"bench-{num_gpus}-{config['network']}"
     wandb.init(project='nccl_bench', name=name)
 
     # record run config parameters

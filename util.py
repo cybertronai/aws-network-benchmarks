@@ -5,7 +5,7 @@ import subprocess
 import sys
 import tempfile
 import threading
-from typing import List
+from typing import List, Any, Dict
 
 
 class FileLogger:
@@ -49,8 +49,39 @@ def ossystem(cmd, shell=True):
     (stdout, stderr) = p.communicate()
     return stdout.decode('ascii')
 
+        
+def ossystem2(cmd: str,
+              pipe_fn: str = 'output',
+              shell: bool = True,
+              extra_env: Dict[str, Any] = None):
+    """
+    Better version of os.system
 
-def ossystem_with_pipe(cmd: str, out_fn: str, shell: bool=True):
+    Args:
+        cmd: command to run
+        pipe_fn: pipe output to this file
+        shell:
+        extra_env: additional env variables to set
+    """
+    env = os.environ.copy()
+    if extra_env:
+        for e in extra_env:
+            assert isinstance(e, str)
+            env[e] = str(extra_env[e])
+
+    with open(pipe_fn, 'wb') as f:
+        process = subprocess.Popen(cmd,
+                                   shell=shell, 
+                                   stderr=subprocess.STDOUT,
+                                   stdout=subprocess.PIPE,
+                                   env=env)
+        for line in iter(process.stdout.readline, b''):
+            sys.stdout.write(line.decode(sys.stdout.encoding))
+            sys.stdout.flush()
+            f.write(line)
+
+
+def ossystem_with_pipe(cmd: str, out_fn: str = 'output', shell: bool = True):
     # like os.system(cmd+' | tee > out_fn') but gets around unbuffering restrictions on pipe
     # use shell=True because commands can contain $
 
@@ -202,3 +233,36 @@ def text_unpickle(pickle_string_encoded: str):
         return None
     obj = pickle.loads(base64.b64decode(pickle_string_encoded))
     return obj
+
+
+def install_pdb_handler():
+  """Automatically start pdb:
+      1. CTRL+\\ breaks into pdb.
+      2. pdb gets launched on exception.
+  """
+
+  import signal
+  import pdb
+
+  def handler(_signum, _frame):
+    pdb.set_trace()
+  signal.signal(signal.SIGQUIT, handler)
+
+  # Drop into PDB on exception
+  # from https://stackoverflow.com/questions/13174412
+  def info(type_, value, tb):
+   if hasattr(sys, 'ps1') or not sys.stderr.isatty():
+      # we are in interactive mode or we don't have a tty-like
+      # device, so we call the default hook
+      sys.__excepthook__(type_, value, tb)
+   else:
+      import traceback
+      import pdb
+      # we are NOT in interactive mode, print the exception...
+      traceback.print_exception(type_, value, tb)
+      print()
+      # ...then start the debugger in post-mortem mode.
+      pdb.pm()
+
+  sys.excepthook = info
+
