@@ -28,8 +28,8 @@ parser.add_argument('--num_tasks', type=int, default=1, help="number of nodes")
 parser.add_argument('--spot', action='store_true', help='use spot instances')
 parser.add_argument('--skip_setup', action='store_true',
                     help='can use this option on reruns for slightly faster turn-around')
-#parser.add_argument('--image_name', type=str, default="Deep Learning AMI (Amazon Linux) Version 23.0")
-parser.add_argument('--image_name', type=str, default="amzn2-ami-hvm-2.0.20190508-x86_64-gp2")
+# parser.add_argument('--image_name', type=str, default="Deep Learning AMI (Amazon Linux) Version 23.0")
+parser.add_argument('--image_name', type=str, default='amzn2-ami-hvm-2.0.20190612-x86_64-gp2')
 parser.add_argument('--ofi_patch_location', type=str, default=os.environ['HOME']+'/Downloads/aws-ofi-nccl.patch', help='location of patch to apply to aws-ofi install')
 
 # internal flags
@@ -64,7 +64,8 @@ def launcher():
     pickled_config = util.text_pickle(config)
     task0.write(args.internal_config_fn, pickled_config)
 
-    task0.run('pip install -r worker_requirements.txt')  # things needed for worker()
+    # task0.run('pip install -r worker_requirements.txt')  # things needed for worker()
+    task0.run('pip install -r worker_requirements.txt --ignore-installed') # get around dlami requiring older version of pyyaml
 
     cmd = f'bash ~/prepare_efa_image.sh'
     task0.run(f'python {__file__} --internal_role=worker --internal_cmd={shlex.quote(cmd)}')
