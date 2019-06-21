@@ -28,7 +28,8 @@ parser.add_argument('--num_tasks', type=int, default=1, help="number of nodes")
 parser.add_argument('--spot', action='store_true', help='use spot instances')
 parser.add_argument('--skip_setup', action='store_true',
                     help='can use this option on reruns for slightly faster turn-around')
-parser.add_argument('--image_name', type=str, default="Deep Learning AMI (Amazon Linux) Version 23.0")
+#parser.add_argument('--image_name', type=str, default="Deep Learning AMI (Amazon Linux) Version 23.0")
+parser.add_argument('--image_name', type=str, default="amzn2-ami-hvm-2.0.20190508-x86_64-gp2")
 parser.add_argument('--ofi_patch_location', type=str, default=os.environ['HOME']+'/Downloads/aws-ofi-nccl.patch', help='location of patch to apply to aws-ofi install')
 
 # internal flags
@@ -99,8 +100,9 @@ def worker():
         extra_env = {'NCCL_VERSION_TAG': nccl_version_tag,
                      'GIT_CHECKOUT_CMD': gitcmd,
                      'NCCL_WIPE_PREVIOUS_BUILD': 1}
-        util.ossystem2(f'bash ~/parameterized_nccl_build.sh',
-                       extra_env=extra_env)
+        #        util.ossystem2(f'bash ~/parameterized_nccl_build.sh',
+        #                       extra_env=extra_env)
+        util.ossystem2(f'bash ~/indu_build.sh')
 
         #    nccl_build('2.4.6', "git checkout v2.4.6-1")
         #    nccl_build('2.4.7', "git checkout v2.4.7-1")
