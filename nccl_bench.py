@@ -94,8 +94,8 @@ def launcher():
             job.run(f'bash ~/parameterized_nccl_build.sh')
 
             #        nccl_build('2.3.7', "git checkout v2.3.7-1")
-        nccl_build('2.4.6', "git checkout v2.4.6-1")
-        nccl_build('2.4.7', "git checkout v2.4.7-1")
+            #        nccl_build('2.4.6', "git checkout v2.4.6-1")
+            #        nccl_build('2.4.7', "git checkout v2.4.7-1")
         nccl_build('2.4.7ms0', "git checkout dev/kwen/multi-socket")
 
         # setup password-less SSH between all pairs of instances
