@@ -168,28 +168,24 @@ cd nccl-tests
 
 LDFLAGS="-L/opt/amazon/efa/lib64" make MPI=1 MPI_HOME=$MPI_HOME CUDA_HOME=$CUDA_HOME NCCL_HOME=$NCCL_HOME
 
-################################################################################
-# PyTorch
-################################################################################
+# ################################################################################
+# # PyTorch
+# ################################################################################
 
-echo "Installing PyTorch"
-mkdir -p $FOLDER_ROOT && cd $FOLDER_ROOT
-git clone --recursive https://github.com/pytorch/pytorch
-cd pytorch
-git fetch
-git checkout v1.1.0
+# echo "Installing PyTorch"
+# mkdir -p $FOLDER_ROOT && cd $FOLDER_ROOT
+# git clone --recursive https://github.com/pytorch/pytorch
+# cd pytorch
+# git fetch
+# git checkout v1.1.0
 
-git clone https://github.com/NVIDIA/nccl-tests.git || echo "exists"
-cd nccl-tests
+# source activate pytorch_p36
+# export CMAKE_PREFIX_PATH=${CONDA_PREFIX:-"$(dirname $(which conda))/../"}
+# export NCCL_ROOT_DIR=$FOLDER_ROOT/nccl
 
-source activate pytorch_p36
-export CMAKE_PREFIX_PATH=${CONDA_PREFIX:-"$(dirname $(which conda))/../"}
-export NCCL_ROOT_DIR=$FOLDER_ROOT/nccl
-
-rm -Rf build
-python setup.py install
+# rm -Rf build
+# python setup.py install
 
 
 popd
-
 set +e
