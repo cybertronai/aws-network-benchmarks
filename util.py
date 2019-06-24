@@ -266,3 +266,10 @@ def install_pdb_handler():
 
   sys.excepthook = info
 
+
+def get_script_name(name):
+    fn = os.path.basename(name)
+    if '.' in fn:
+        return fn.rsplit('.', 1)[0]
+    else:
+        return fn

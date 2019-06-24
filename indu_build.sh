@@ -1,5 +1,3 @@
-set -y
-
 sudo yum update -y
 sudo yum groupinstall "Development Tools" -y
 
@@ -110,5 +108,4 @@ sudo yum install -y mosh
 sudo yum install -y htop
 sudo yum install -y gdb
 sudo yum install -y tmux
-
-set +y
+sudo yum install -y emacs
