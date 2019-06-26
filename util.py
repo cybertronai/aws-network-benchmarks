@@ -5,7 +5,7 @@ import subprocess
 import sys
 import tempfile
 import threading
-from typing import List, Any, Dict
+from typing import List, Any, Dict, Tuple
 
 
 class FileLogger:
@@ -276,7 +276,7 @@ def get_script_name(name):
         return fn
 
 
-def setup_ssh(job):
+def setup_mpi(job) -> Tuple[str, str]:
     """Sets up passwordless SSH between all tasks in the job."""
     public_keys = {}
     for task in job.tasks:
@@ -293,7 +293,27 @@ def setup_ssh(job):
             task2.run(f'echo "{public_keys[task1]}" >> ~/.ssh/authorized_keys',
                       non_blocking=True)
 
+    task0 = job.tasks[0]
+    hosts = [task.ip for task in job.tasks]
+    hosts_str = ','.join(hosts)
+    hosts_file_lines = [f'{host} slots={task0.num_gpus} max-slots={task0.num_gpus}' for host in hosts]
+    hosts_file_str = '\n'.join(hosts_file_lines)
+    return hosts_str, hosts_file_str
+
+
 def extract_fields(obj, fields):
     """Extracts subset of object attributes as dict."""
     fdict = vars(obj)
     return {f: fdict.get(f) for f in fields if f in fdict}
+
+def extract_ec2_metadata():
+    from ec2_metadata import ec2_metadata
+    return {
+        'region': ec2_metadata.region,
+        'account_id': ec2_metadata.account_id,
+        'ami_id': ec2_metadata.ami_id,
+        'availability_zone': ec2_metadata.availability_zone,
+        'instance_type': ec2_metadata.instance_type,
+        'public_ipv4': ec2_metadata.public_ipv4,
+        'private_ipv4': ec2_metadata.private_ipv4
+        }

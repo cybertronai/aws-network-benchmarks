@@ -70,14 +70,9 @@ def launcher():
             args.do_efa = 0
 
     # setup password-less SSH between all pairs of instances
-    util.setup_ssh(job)
-
-    # create arguments for --hosts {host_str} and --hostfile {HOSTS_SLOTS_FN}
-    hosts = [task.ip for task in job.tasks]
-    host_str = ','.join(hosts)
-    hosts_file_lines = [f'{host} slots={task0.num_gpus} max-slots={task0.num_gpus}' for host in hosts]
-    task0.write(HOSTS_SLOTS_FN, '\n'.join(hosts_file_lines))
-
+    hosts_str, hosts_file_str = util.setup_mpi(job)
+    task0.write(HOSTS_SLOTS_FN, hosts_file_str)
+    
     CUDA_HOME = f'/usr/local/cuda'
     EFA_HOME = f'/opt/amazon/efa'
     NCCL_HOME = f'/usr/local/cuda'
@@ -127,7 +122,7 @@ def launcher():
     job.run(f'export NCCL_HOME={NCCL_HOME}')
 
     # sanity check, simple mpirun that will print hostnames
-    task0.run(f'{MPI_HOME}/bin/mpirun --host {host_str} hostname')
+    task0.run(f'{MPI_HOME}/bin/mpirun --host {hosts_str} hostname')
 
     cmd = (f'{MPI_HOME}/bin/mpirun '
            f' -n {NUM_GPUS} -N {NPER_NODE} --hostfile {HOSTS_SLOTS_FN} '
@@ -160,21 +155,18 @@ def worker():
     import wandb
     from ec2_metadata import ec2_metadata
     
-    # log info propagated from the launcher
+    # log config info propagated from the launcher
     config = util.text_unpickle(open(args.internal_config_fn).read())
     config['worker_conda'] = util.ossystem('echo ${CONDA_PREFIX:-"$(dirname $(which conda))/../"}')
 
-    config.update(util.extract_fields(ec2_metadata, ['region', 'account_id', 'ami_id', 'availability_zone', 'instance_type', 'public_ipv4', 'private_ipv4']))
+    config.update(util.extract_ec2_metadata())
+    
     
     num_gpus = config['num_gpus']
     name = f"bench-{num_gpus}-{config['network']}"
     wandb.init(project='nccl_bench', name=name)
 
-    # record run config parameters
-    print(config)
-    wandb.config.update({})
-    if config:
-        wandb.config.update(config)
+    wandb.config.update(config)
     
     for key in os.environ:
         if re.match(r"^NCCL|CUDA|PATH|^LD|USER|PWD", key):
