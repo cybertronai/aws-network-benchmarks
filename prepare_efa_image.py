@@ -104,7 +104,10 @@ def worker():
     print(config)
     
     import wandb
-    wandb.init(project='nccl_bench', name=util.get_script_name(__file__))
+    # let environment variables override project/run name
+    project = None if 'WANDB_ENTITY' in os.environ else 'nccl_bench'
+    name = None if 'WANDB_DESCRIPTION' in os.environ else util.get_script_name(__file__)
+    wandb.init(project=project, name=name)
     
     wandb.config.update(config)
     if config:

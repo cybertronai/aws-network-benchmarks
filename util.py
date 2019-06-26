@@ -268,8 +268,32 @@ def install_pdb_handler():
 
 
 def get_script_name(name):
+    """/somefile/script.py -> script"""
     fn = os.path.basename(name)
     if '.' in fn:
         return fn.rsplit('.', 1)[0]
     else:
         return fn
+
+
+def setup_ssh(job):
+    """Sets up passwordless SSH between all tasks in the job."""
+    public_keys = {}
+    for task in job.tasks:
+        key_fn = '~/.ssh/id_rsa'  # this fn is special, used by default by ssh
+        task.run(f"yes | ssh-keygen -t rsa -f {key_fn} -N ''")
+
+        public_keys[task] = task.read(key_fn + '.pub')
+
+    for task1 in job.tasks:
+        task1.run('echo "StrictHostKeyChecking no" >> /etc/ssh/ssh_config',
+                  sudo=True, non_blocking=True)
+        for task2 in job.tasks:
+            # task1 ->ssh-> task2
+            task2.run(f'echo "{public_keys[task1]}" >> ~/.ssh/authorized_keys',
+                      non_blocking=True)
+
+def extract_fields(obj, fields):
+    """Extracts subset of object attributes as dict."""
+    fdict = vars(obj)
+    return {f: fdict.get(f) for f in fields if f in fdict}
