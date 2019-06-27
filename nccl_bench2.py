@@ -17,7 +17,6 @@ python nccl_bench.py
 
 import argparse
 import os
-import re
 import shlex
 import sys
 
@@ -34,8 +33,9 @@ parser.add_argument('--skip_setup', action='store_true',
 parser.add_argument('--image_name', type=str, default='basic-efa01', help="Image to use for this run")
 parser.add_argument('--size_mb', type=int, default=1024, help="largest size of allreduce to test")
 parser.add_argument('--do_efa', type=int, default=-1, help="whether to test EFA setup. If left at -1, determined automatically from instance type.")
-parser.add_argument('--wandb', type=str, default='', help='prefix for wandb log')
+parser.add_argument('--wandb', type=str, default='', help='suffix for wandb log')
 parser.add_argument('--custom_ring_order', type=int, default=0, help='use custom ring order from https://github.com/NVIDIA/nccl/issues/209#issuecomment-491475792')
+parser.add_argument('--aggregation', type=str, default='tree', choices=('tree', 'ring'), help='aggregation type, ring or tree')
 
 # internal flags
 parser.add_argument('--internal_role', type=str, default='launcher')
@@ -97,7 +97,7 @@ def launcher():
     config['launcher_conda'] = util.ossystem('echo ${CONDA_PREFIX:-"$(dirname $(which conda))/../"}')
     config['launcher_cmd'] = 'python '+' '.join(sys.argv)
     config['num_gpus'] = NUM_GPUS
-    config['wandb_prefix'] = args.wandb
+    config['wandb_suffix'] = args.wandb
     config.update(vars(args))
 
     if args.do_efa:
@@ -127,12 +127,16 @@ def launcher():
     # sanity check, simple mpirun that will print hostnames
     task0.run(f'{MPI_HOME}/bin/mpirun --host {hosts_str} hostname')
 
+    threshold = 0
+    if args.aggregation == 'tree':
+        threshold = 10*4294967296   # 40 GB
+
     env = {'FI_PROVIDER': FI_PROVIDER,      # Enables running nccl-tests using EFA provider.
            'FI_OFI_RXR_RX_COPY_UNEXP': 1,   #  Disables using bounce buffers for unexpected messages.
            'FI_OFI_RXR_RX_COPY_OOO': 1,     # Disables using bounce buffers for out of order messages.
            'FI_EFA_MR_CACHE_ENABLE': 1,     # Enables memory region caching.
            'FI_OFI_RXR_INLINE_MR_ENABLE': 1,  # Enables inline memory registration of data buffers.
-           'NCCL_TREE_THRESHOLD': 4294967296,  # switch to rings after 4GB
+           'NCCL_TREE_THRESHOLD': threshold,  # switch to rings after this threshold
            'LD_LIBRARY_PATH': f'{CUDA_HOME}/lib:{CUDA_HOME}/lib64:{EFA_HOME}/lib64',
            'NCCL_DEBUG': 'VERSION'
            }
@@ -165,28 +169,21 @@ def worker():
     config = util.text_unpickle(open(args.internal_config_fn).read())
     config['worker_conda'] = util.ossystem('echo ${CONDA_PREFIX:-"$(dirname $(which conda))/../"}')
 
-    config.update(util.extract_ec2_metadata())
-
-    num_gpus = config['num_gpus']
-    name = f"bench-{num_gpus}-{config['network']}"
-    if config['wandb_prefix']:
-        name = config['wandb_prefix'] + '-'+name
+    name = util.get_script_name(__file__)
+    if config['wandb_suffix']:
+        name = name+'-'+config['wandb_suffix']
 
     wandb.init(project='nccl_bench', name=name)
-
     wandb.config.update(config)
+    util.log_environment()
     
-    for key in os.environ:
-        if re.match(r"^NCCL|CUDA|PATH|^LD|USER|PWD", key):
-            wandb.config['env_'+key] = os.getenv(key)
-
     print("Running command:")
     print(args.internal_cmd)
 
     output_fn = 'output'
     util.ossystem_with_pipe(args.internal_cmd, output_fn)
 
-    # # get individual bandwidth numbers
+    # get individual bandwidth numbers
     alg_bw, bus_bw, avg_bw = parse_nccltest_output.parse(output_fn)
 
     wandb.log(parse_nccltest_output.make_readable(alg_bw, 'algbw_'))

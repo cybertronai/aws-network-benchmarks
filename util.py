@@ -1,6 +1,7 @@
 import base64
 import os
 import pickle
+import re
 import subprocess
 import sys
 import tempfile
@@ -325,3 +326,15 @@ def format_env(d):
         '-x var1="val1" -x var2="val2" '"""
     args = [f'-x {key}="{d[key]}" ' for key in sorted(d)]
     return ''.join(args)
+
+
+def log_environment():
+    """Logs AWS local machine environment to wandb config."""
+    import os
+    import wandb
+    
+    for key in os.environ:
+        if re.match(r"^NCCL|CUDA|PATH|^LD|USER|PWD", key):
+            wandb.config['env_'+key] = os.getenv(key)
+
+    wandb.config.update(extract_ec2_metadata())
