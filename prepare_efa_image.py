@@ -22,8 +22,8 @@ import util
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--name', type=str, default='prepare-image')
-#parser.add_argument('--instance_type', type=str, default="c5n.18xlarge")
-parser.add_argument('--instance_type', type=str, default="p3dn.24xlarge")
+parser.add_argument('--instance_type', type=str, default="c5.18xlarge")
+#parser.add_argument('--instance_type', type=str, default="p3dn.24xlarge")
 parser.add_argument('--num_tasks', type=int, default=1, help="number of nodes")
 parser.add_argument('--spot', action='store_true', help='use spot instances')
 parser.add_argument('--skip_setup', action='store_true',

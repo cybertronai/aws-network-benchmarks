@@ -306,6 +306,7 @@ def extract_fields(obj, fields):
     fdict = vars(obj)
     return {f: fdict.get(f) for f in fields if f in fdict}
 
+
 def extract_ec2_metadata():
     from ec2_metadata import ec2_metadata
     return {
@@ -317,3 +318,10 @@ def extract_ec2_metadata():
         'public_ipv4': ec2_metadata.public_ipv4,
         'private_ipv4': ec2_metadata.private_ipv4
         }
+
+
+def format_env(d):
+    """Converts env var values into format suitable for mpirun, ie
+        '-x var1="val1" -x var2="val2" '"""
+    args = [f'-x {key}="{d[key]}" ' for key in sorted(d)]
+    return ''.join(args)

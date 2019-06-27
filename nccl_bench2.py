@@ -34,6 +34,8 @@ parser.add_argument('--skip_setup', action='store_true',
 parser.add_argument('--image_name', type=str, default='basic-efa01', help="Image to use for this run")
 parser.add_argument('--size_mb', type=int, default=1024, help="largest size of allreduce to test")
 parser.add_argument('--do_efa', type=int, default=-1, help="whether to test EFA setup. If left at -1, determined automatically from instance type.")
+parser.add_argument('--wandb', type=str, default='', help='prefix for wandb log')
+parser.add_argument('--custom_ring_order', type=int, default=0, help='use custom ring order from https://github.com/NVIDIA/nccl/issues/209#issuecomment-491475792')
 
 # internal flags
 parser.add_argument('--internal_role', type=str, default='launcher')
@@ -95,6 +97,7 @@ def launcher():
     config['launcher_conda'] = util.ossystem('echo ${CONDA_PREFIX:-"$(dirname $(which conda))/../"}')
     config['launcher_cmd'] = 'python '+' '.join(sys.argv)
     config['num_gpus'] = NUM_GPUS
+    config['wandb_prefix'] = args.wandb
     config.update(vars(args))
 
     if args.do_efa:
@@ -112,7 +115,7 @@ def launcher():
             task.run('/opt/amazon/efa/bin/fi_info -p efa')
             assert 'provider: efa' in task.output
     else:
-        FI_PROVIDER = 'old'    # this is undefined, so mpirun will fall back to default behavior
+        FI_PROVIDER = 'sockets'    # this is undefined, so mpirun will fall back to default behavior
 
     config['network'] = FI_PROVIDER
     print("Running network test")
@@ -124,18 +127,22 @@ def launcher():
     # sanity check, simple mpirun that will print hostnames
     task0.run(f'{MPI_HOME}/bin/mpirun --host {hosts_str} hostname')
 
+    env = {'FI_PROVIDER': FI_PROVIDER,      # Enables running nccl-tests using EFA provider.
+           'FI_OFI_RXR_RX_COPY_UNEXP': 1,   #  Disables using bounce buffers for unexpected messages.
+           'FI_OFI_RXR_RX_COPY_OOO': 1,     # Disables using bounce buffers for out of order messages.
+           'FI_EFA_MR_CACHE_ENABLE': 1,     # Enables memory region caching.
+           'FI_OFI_RXR_INLINE_MR_ENABLE': 1,  # Enables inline memory registration of data buffers.
+           'NCCL_TREE_THRESHOLD': 4294967296,  # switch to rings after 4GB
+           'LD_LIBRARY_PATH': f'{CUDA_HOME}/lib:{CUDA_HOME}/lib64:{EFA_HOME}/lib64',
+           'NCCL_DEBUG': 'VERSION'
+           }
+
+    if args.custom_ring_order:
+        env['CUDA_VISIBLE_DEVICES'] = '0,1,3,2,7,6,4,5'
+
     cmd = (f'{MPI_HOME}/bin/mpirun '
            f' -n {NUM_GPUS} -N {NPER_NODE} --hostfile {HOSTS_SLOTS_FN} '
-           f'-x FI_PROVIDER="{FI_PROVIDER}" '  # Enables running nccl-tests using EFA provider.
-           f'-x FI_OFI_RXR_RX_COPY_UNEXP=1 '  #  Disables using bounce buffers for unexpected messages.
-           f'-x FI_OFI_RXR_RX_COPY_OOO=1 '  # Disables using bounce buffers for out of order messages.
-           f'-x FI_EFA_MR_CACHE_ENABLE=1 '  # Enables memory region caching.
-           f'-x FI_OFI_RXR_INLINE_MR_ENABLE=1 '  # Enables inline memory registration of data buffers.
-           f'-x NCCL_TREE_THRESHOLD=4294967296 '
-           #           f'-x NCCL_TREE_THRESHOLD=0 '  # force ring algorithm
-           #           f'-x CUDA_VISIBLE_DEVICES=0,1,3,2,7,6,4,5 '
-           f'-x LD_LIBRARY_PATH={CUDA_HOME}/lib:{CUDA_HOME}/lib64:{EFA_HOME}/lib64 '
-           f'-x NCCL_DEBUG=VERSION, '  # print NCCL version config
+           f'{util.format_env(env)} '
            f'--mca btl tcp,self --mca btl_tcp_if_exclude lo,docker0 '
            f'-mca orte_base_help_aggregate 0 '   # more logging messages
            f'--bind-to none '
@@ -153,17 +160,18 @@ def worker():
     """Runs benchmark locally on AWS and logs results."""
     
     import wandb
-    from ec2_metadata import ec2_metadata
-    
+
     # log config info propagated from the launcher
     config = util.text_unpickle(open(args.internal_config_fn).read())
     config['worker_conda'] = util.ossystem('echo ${CONDA_PREFIX:-"$(dirname $(which conda))/../"}')
 
     config.update(util.extract_ec2_metadata())
-    
-    
+
     num_gpus = config['num_gpus']
     name = f"bench-{num_gpus}-{config['network']}"
+    if config['wandb_prefix']:
+        name = config['wandb_prefix'] + '-'+name
+
     wandb.init(project='nccl_bench', name=name)
 
     wandb.config.update(config)
