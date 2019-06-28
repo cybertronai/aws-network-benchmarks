@@ -255,7 +255,7 @@ def worker():
     util.ossystem_with_pipe(args.internal_cmd, output_fn)
 
     # # get individual bandwidth numbers
-    alg_bw, bus_bw, avg_bw = parse_nccltest_output.parse(output_fn)
+    duration, alg_bw, bus_bw, avg_bw = parse_nccltest_output.parse(output_fn)
 
     wandb.log(parse_nccltest_output.make_readable(alg_bw, 'algbw_'))
     wandb.log(parse_nccltest_output.make_readable(bus_bw, 'busbw_'))

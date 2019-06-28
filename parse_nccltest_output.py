@@ -9,11 +9,37 @@ keys = [64 * K, M, 16 * M, 64 * M, 256 * M, G, 2 * G, 4 * G]
 key_names = ['64K', '1M', '16M', '64M', '256M', '1G', '2G', '4G']
 
 
-def parse(fn) -> Tuple[Dict[int, float], Dict[int, float], float]:
-    """Parses output of nccl test, returns dictionary of values suitable for logging in Gbit/second."""
+class NcclTestOuput:
+    duration: Dict[int, float]
+    alg_bw: Dict[int, float]
+    bus_bw: Dict[int, float]
+    avg_bw: float
+
+    def __init__(self, duration, alg_bw, bus_bw, avg_bw):
+        self.duration = duration
+        self.alg_bw = alg_bw
+        self.bus_bw = bus_bw
+        self.avg_bw = avg_bw
+
+
+def parse(fn) -> NcclTestOuput:
+    """Parses output of nccl test, returns dictionary of values suitable for logging from output like this
+
+    https://app.wandb.ai/yaroslavvb/nccl_bench/runs/uabtfbpc/logs
+
+
+    Returns:
+        duration size:total time in usec
+        alg_bw size:Gbps bandwidth
+        bus_bw size:Gbps bandwidth
+        avg_bw average bandwidth
+:
+
+    """
     regex = re.compile('.*Avg bus bandwidth.+?:.([0-9.]+).*')
     alg_bw = {}
     bus_bw = {}
+    duration = {}
     avg_bw = -1
     output_started = False
     for line in open(fn):
@@ -32,23 +58,26 @@ def parse(fn) -> Tuple[Dict[int, float], Dict[int, float], float]:
 
         if not output_started:
             continue
-        
+
         if regex.match(line):
-            avg_bw = float(regex.findall(line)[0])*8
+            avg_bw = float(regex.findall(line)[0]) * 8
 
         if line.startswith('#') or len(toks) != 12:
             continue
 
         # other threads can write to stdout
+        if not toks:
+            continue
         try:
             size = int(toks[0])
-        except Exception as e:
+        except ValueError as _:
             continue
-        if size in keys:
-            alg_bw[size] = float(toks[9])*8
-            bus_bw[size] = float(toks[10])*8
 
-    return alg_bw, bus_bw, avg_bw
+        duration[size] = float(toks[8])
+        alg_bw[size] = float(toks[9]) * 8
+        bus_bw[size] = float(toks[10]) * 8
+
+    return NcclTestOuput(duration, alg_bw, bus_bw, avg_bw)
 
 
 def make_readable(d, prefix: str) -> Dict[str, float]:
@@ -65,7 +94,10 @@ def make_readable(d, prefix: str) -> Dict[str, float]:
 
 def main():
     print(parse('nccltest_output.txt'))
-    alg_bw, bus_bw, bw = parse('nccltest_output.txt')
+    duration, alg_bw, bus_bw, bw = parse('nccltest_output.txt')
+    print('duration')
+    print(duration)
+    print('-' * 80)
     print(make_readable(alg_bw, 'algbw_'))
 
 

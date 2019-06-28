@@ -72,7 +72,8 @@ def launcher():
             args.do_efa = 0
 
     # setup password-less SSH between all pairs of instances
-    hosts_str, hosts_file_str = util.setup_mpi(job)
+    hosts_str, hosts_file_str = util.setup_mpi(job, skip_ssh_setup=os.path.exists('/tmp/skip_mpi_setup'))
+
     task0.write(HOSTS_SLOTS_FN, hosts_file_str)
     
     CUDA_HOME = f'/usr/local/cuda'
@@ -144,13 +145,16 @@ def launcher():
     if args.custom_ring_order:
         env['CUDA_VISIBLE_DEVICES'] = '0,1,3,2,7,6,4,5'
 
-    cmd = (f'{MPI_HOME}/bin/mpirun '
-           f' -n {NUM_GPUS} -N {NPER_NODE} --hostfile {HOSTS_SLOTS_FN} '
-           f'{util.format_env(env)} '
-           f'--mca btl tcp,self --mca btl_tcp_if_exclude lo,docker0 '
-           f'-mca orte_base_help_aggregate 0 '   # more logging messages
-           f'--bind-to none '
-           f'{BENCHMARK_BIN} -b 8 -e {SIZE_MB}M -f 2 -g 1 -c 1 -n 100')
+    cmd = [
+        f'{MPI_HOME}/bin/mpirun ',
+        f' -n {NUM_GPUS} -N {NPER_NODE} --hostfile {HOSTS_SLOTS_FN} ',
+        f'{util.format_env(env)} ',
+        f'--mca btl tcp,self --mca btl_tcp_if_exclude lo,docker0 ',
+        f'-mca orte_base_help_aggregate 0 ',   # more logging messages
+        f'--bind-to none ',
+        f'{BENCHMARK_BIN} -b 8 -e {SIZE_MB}M -f 2 -g 1 -c 1 -n 100',
+    ]
+    cmd = ' '.join(cmd)
 
     # assume we didn't change directory from ~
     pickled_config = util.text_pickle(config)
@@ -182,9 +186,14 @@ def worker():
 
     output_fn = 'output'
     util.ossystem_with_pipe(args.internal_cmd, output_fn)
+    wandb.save(output_fn)
 
     # get individual bandwidth numbers
-    alg_bw, bus_bw, avg_bw = parse_nccltest_output.parse(output_fn)
+    output = parse_nccltest_output.parse(output_fn)
+    # duration = output.duration
+    alg_bw = output.alg_bw
+    bus_bw = output.bus_bw
+    avg_bw = output.avg_bw
 
     wandb.log(parse_nccltest_output.make_readable(alg_bw, 'algbw_'))
     wandb.log(parse_nccltest_output.make_readable(bus_bw, 'busbw_'))

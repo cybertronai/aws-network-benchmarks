@@ -277,22 +277,23 @@ def get_script_name(name):
         return fn
 
 
-def setup_mpi(job) -> Tuple[str, str]:
+def setup_mpi(job, skip_ssh_setup=False) -> Tuple[str, str]:
     """Sets up passwordless SSH between all tasks in the job."""
     public_keys = {}
-    for task in job.tasks:
-        key_fn = '~/.ssh/id_rsa'  # this fn is special, used by default by ssh
-        task.run(f"yes | ssh-keygen -t rsa -f {key_fn} -N ''")
+    if not skip_ssh_setup:
+        for task in job.tasks:
+            key_fn = '~/.ssh/id_rsa'  # this fn is special, used by default by ssh
+            task.run(f"yes | ssh-keygen -t rsa -f {key_fn} -N ''")
 
-        public_keys[task] = task.read(key_fn + '.pub')
+            public_keys[task] = task.read(key_fn + '.pub')
 
-    for task1 in job.tasks:
-        task1.run('echo "StrictHostKeyChecking no" >> /etc/ssh/ssh_config',
-                  sudo=True, non_blocking=True)
-        for task2 in job.tasks:
-            # task1 ->ssh-> task2
-            task2.run(f'echo "{public_keys[task1]}" >> ~/.ssh/authorized_keys',
-                      non_blocking=True)
+        for task1 in job.tasks:
+            task1.run('echo "StrictHostKeyChecking no" >> /etc/ssh/ssh_config',
+                      sudo=True, non_blocking=True)
+            for task2 in job.tasks:
+                # task1 ->ssh-> task2
+                task2.run(f'echo "{public_keys[task1]}" >> ~/.ssh/authorized_keys',
+                          non_blocking=True)
 
     task0 = job.tasks[0]
     hosts = [task.ip for task in job.tasks]
