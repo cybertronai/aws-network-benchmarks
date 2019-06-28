@@ -287,13 +287,29 @@ def setup_mpi(job, skip_ssh_setup=False) -> Tuple[str, str]:
 
             public_keys[task] = task.read(key_fn + '.pub')
 
-        for task1 in job.tasks:
+        keys = {}
+        for i, task1 in enumerate(job.tasks):
             task1.run('echo "StrictHostKeyChecking no" >> /etc/ssh/ssh_config',
                       sudo=True, non_blocking=True)
-            for task2 in job.tasks:
-                # task1 ->ssh-> task2
-                task2.run(f'echo "{public_keys[task1]}" >> ~/.ssh/authorized_keys',
-                          non_blocking=True)
+            for j, task2_ in enumerate(job.tasks):
+                #  task1 ->ssh-> task2
+                #  task2.run(f'echo "{public_keys[task1]}" >> ~/.ssh/authorized_keys',
+                #         non_blocking=True)
+                keys.setdefault(j, []).append(public_keys[task1])
+
+        def setup_task_mpi(j2):
+            task2 = job.tasks[j2]
+            key_str = '\n'.join(keys[j2])
+            fn = f'task-{j2}'
+            with open(fn, 'w') as f:
+                f.write(key_str)
+            task2.upload(fn)
+            task2.run(f"""echo `cat {fn}` >> ~/.ssh/authorized_keys""",
+                      non_blocking=True)
+
+        run_parallel(setup_task_mpi, range(len(job.tasks)))
+        #        for j, task2_ in enumerate(job.tasks):
+        #            setup_task_mpi(j)
 
     task0 = job.tasks[0]
     hosts = [task.ip for task in job.tasks]
@@ -339,3 +355,11 @@ def log_environment():
             wandb.config['env_'+key] = os.getenv(key)
 
     wandb.config.update(extract_ec2_metadata())
+
+    
+def run_parallel(f, args_):
+    threads = [threading.Thread(name=f'run_parallel_{i}', target=f, args=[t]) for i, t in enumerate(args_)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()

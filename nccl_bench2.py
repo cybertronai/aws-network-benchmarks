@@ -19,6 +19,7 @@ import argparse
 import os
 import shlex
 import sys
+import threading
 
 import parse_nccltest_output
 import util
@@ -60,8 +61,8 @@ def launcher():
     task0 = job.tasks[0]
     job.rsync('.')
     job.run('killall all_reduce_perf || echo nevermind')  # kill previous run
-    job.run('pip install -r worker_requirements.txt')     # things needed for worker()
-    job.tasks[0].write(SETUP_COMLETED_FN, 'ok')
+    #    job.run('pip install -r worker_requirements.txt')     # things needed for worker()
+    #    job.tasks[0].write(SETUP_COMLETED_FN, 'ok')
 
     # choose EFA/no-EFA codepath based on instance-type, overridable by do_efa
     assert args.do_efa in [-1, 0, 1]
@@ -106,7 +107,8 @@ def launcher():
 
         # check that ib_uverbs are loaded, and load them if not
         # Also make sure that EFA provider is available
-        for task in job.tasks:
+
+        def efa_setup(task):
             task.run('/usr/sbin/lsmod')
             if 'verbs' not in task.output:
                 task.run('sudo /usr/sbin/modprobe ib_uverbs')
@@ -115,15 +117,20 @@ def launcher():
 
             task.run('/opt/amazon/efa/bin/fi_info -p efa')
             assert 'provider: efa' in task.output
+                
+        util.run_parallel(efa_setup, job.tasks)
+
+        #        for task in job.tasks:
+        #            efa_setup(task)
     else:
         FI_PROVIDER = 'sockets'    # this is undefined, so mpirun will fall back to default behavior
 
     config['network'] = FI_PROVIDER
     print("Running network test")
     
-    job.run(f'export EFA_HOME={EFA_HOME}')
-    job.run(f'export MPI_HOME={MPI_HOME}')
-    job.run(f'export NCCL_HOME={NCCL_HOME}')
+    #    job.run(f'export EFA_HOME={EFA_HOME}')
+    #    job.run(f'export MPI_HOME={MPI_HOME}')
+    #    job.run(f'export NCCL_HOME={NCCL_HOME}')
 
     # sanity check, simple mpirun that will print hostnames
     task0.run(f'{MPI_HOME}/bin/mpirun --host {hosts_str} hostname')
@@ -139,7 +146,7 @@ def launcher():
            'FI_OFI_RXR_INLINE_MR_ENABLE': 1,  # Enables inline memory registration of data buffers.
            'NCCL_TREE_THRESHOLD': threshold,  # switch to rings after this threshold
            'LD_LIBRARY_PATH': f'{CUDA_HOME}/lib:{CUDA_HOME}/lib64:{EFA_HOME}/lib64',
-           'NCCL_DEBUG': 'VERSION'
+           'NCCL_DEBUG': 'INFO'
            }
 
     if args.custom_ring_order:
