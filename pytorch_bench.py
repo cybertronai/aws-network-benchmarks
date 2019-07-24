@@ -9,32 +9,35 @@
 #
 # # 41 Gbps
 # # pytorch 1.0, nccl 2.3.7+cuda10.0
-# python pytorch_bandwidth_benchmark.py --nospot --conda_env=pytorch_p36 --role=launcher --name=nt --skip_setup
+# python pytorch_bench.py --nospot --conda_env=pytorch_p36 --role=launcher --name=nt --skip_setup
 #
 # # 2x layers, 304-308, 50 Gbps
-# python pytorch_bandwidth_benchmark.py --role=launcher --machines=2 --instance_type=p3dn.24xlarge --nproc_per_node=8 --num_rings=16 --num_layers=32
+# python pytorch_bench.py --role=launcher --machines=2 --instance_type=p3dn.24xlarge --nproc_per_node=8 --num_rings=16 --num_layers=32
 
 # # 10.7
 # # PyTorch 1.1.0a0+3803d1c with nccl 2.3.7
-# python pytorch_bandwidth_benchmark.py --nospot --conda_env=pytorch_april --role=launcher --name=nt --skip_setup
+# python pytorch_bench.py --nospot --conda_env=pytorch_april --role=launcher --name=nt --skip_setup
 #
 # # 12.8
 # #  PyTorch 1.1 with nccl 2.4.7ms0
-# python pytorch_bandwidth_benchmark.py --nospot --conda_env=pytorch_april_patched --role=launcher --name=nt --skip_setup
+# python pytorch_bench.py --nospot --conda_env=pytorch_april_patched --role=launcher --name=nt --skip_setup
 
 # 16 Rings, 8 Processes, 151-153, 53 Gbps, received 20.9
 # 16 rings, 8 processes, 173-178, 46 Gbps, received 20.9
 # 171-177ms, 39.8 Gbps
 # with nccl 2.4.6 12 Gbps
-# python pytorch_bandwidth_benchmark.py --role=launcher --machines=2 --aws --instance_type=p3dn.24xlarge --nospot --nproc_per_node=8 --num_rings=16 --skip_setup
+# python pytorch_bench.py --role=launcher --machines=2 --aws --instance_type=p3dn.24xlarge --nospot --nproc_per_node=8 --num_rings=16 --skip_setup
 
 # 185ms, average bw=28
-# python pytorch_bandwidth_benchmark.py --role=launcher --method=allreduce --machines=2 --aws --instance_type=p3dn.24xlarge --nospot --nproc_per_node=8 --num_rings=16 --skip_setup
+# python pytorch_bench.py --role=launcher --method=allreduce --machines=2 --aws --instance_type=p3dn.24xlarge --nospot --nproc_per_node=8 --num_rings=16 --skip_setup
 
 # 170ms, average bw=45
-# python pytorch_bandwidth_benchmark.py --role=launcher --machines=2 --aws --instance_type=p3dn.24xlarge --nospot --nproc_per_node=8 --num_rings=16 --skip_setup
+# python pytorch_bench.py --role=launcher --machines=2 --aws --instance_type=p3dn.24xlarge --nospot --nproc_per_node=8 --num_rings=16 --skip_setup
 #
 
+# with EFA
+
+import wandb
 import argparse
 import os
 import sys
@@ -99,20 +102,43 @@ parser.add_argument('--master_addr', type=str, default='127.0.0.1',
                     help='address of master node')
 parser.add_argument('--master_port', type=int, default=-1,
                     help='port of master node')
+parser.add_argument('--mpirun', type=int, default=0,
+                    help='use mpirun instead of pytorch launcher')
 args = parser.parse_args()
 
 fp16 = True
+HOSTS_SLOTS_FN = 'hosts.slots'
 
 
 def _get_nccl_params():
-    from ncluster import aws_util
+    # from ncluster import aws_util
     params = f'NCCL_DEBUG=VERSION '
     if args.num_tasks > 1:
         params += f'NCCL_MIN_NRINGS={args.num_rings} NCCL_MAX_NRINGS={args.num_rings} '
-    if aws_util.instance_supports_100gbps_network(args.instance_type):
-        params += f'NCCL_SOCKET_IFNAME=ens5 '
+    #    if aws_util.instance_supports_100gbps_network(args.instance_type):
+    #        params += f'NCCL_SOCKET_IFNAME=ens5 '
 
     return params
+
+
+def format_env(**d):
+    """Converts env var values into variable string, ie
+        'var1="val1" var2="val2" '"""
+    args_ = [f'{key}="{d[key]}" ' for key in d]
+    return ''.join(args_)
+
+def format_env_export(**d):
+    """Converts env var values into variable string, ie
+        'export var1="val1" && export var2="val2" '"""
+    args_ = [f'export {key}="{d[key]}" ' for key in d]
+    return ' && '.join(args_)
+
+
+def format_env_x(**d):
+    """Converts env var values into format suitable for mpirun, ie
+        '-x var1="val1" -x var2="val2" '"""
+    args_ = [f'-x {key}="{d[key]}" ' for key in sorted(d)]
+    return ''.join(args_)
 
 
 def launcher():
@@ -121,6 +147,7 @@ def launcher():
     import ncluster
     job = ncluster.make_job(**vars(args))
     print(f"Logging to {job.logdir}")
+    task0 = job.tasks[0]
 
     nccl_params = _get_nccl_params()
 
@@ -134,23 +161,68 @@ def launcher():
 
     dist_params0 = (f'--nproc_per_node={args.nproc_per_node} '
                     f'--nnodes={args.num_tasks} '
-                    f'--master_addr={job.tasks[0].ip} '
+                    f'--master_addr={task0.ip} '
                     f'--master_port={6016} ')
 
     job.rsync('.')
     worker_script_fn = os.path.basename(__file__)  # remote location
 
+    hosts_str, hosts_file_str = util.setup_mpi(job)
+    task0.write(HOSTS_SLOTS_FN, hosts_file_str)
+
     job.run(f'killall -9 python || echo skipping && source activate {args.conda_env}')
 
-    for i, task in enumerate(job.tasks):
-        dist_params = dist_params0 + f'--node_rank={i} '
-        cmd = (f'{nccl_params} python -m torch.distributed.launch {dist_params} {worker_script_fn} '
-               f'{worker_params} ')
-        task.run(f'echo {cmd} > {job.logdir}/task-{i}.cmd')  # save command-line
-        task.run(cmd, non_blocking=True)
+    if not args.mpirun:
+        for i, task in enumerate(job.tasks):
+            dist_params = dist_params0 + f'--node_rank={i} '
+            cmd = (f'{nccl_params} python -m torch.distributed.launch {dist_params} {worker_script_fn} '
+                   f'{worker_params} ')
+            task.run(f'echo {cmd} > {job.logdir}/task-{i}.cmd')  # save command-line
+            task.run(cmd, non_blocking=True)
+    else:
+        # fill in local_rank
+        # fill in MASTER_ADDR, MASTER_PORT, WORLD_SIZE
+        # OMPI_COMM_WORLD_SIZE
+        # OMPI_COMM_WORLD_RANK
+        # OMPI_COMM_WORLD_LOCAL_RANK
+        # OMPI_COMM_WORLD_NODE_RANK
+        FI_PROVIDER = 'efa'
+        CUDA_HOME = f'/usr/local/cuda'
+        EFA_HOME = f'/opt/amazon/efa'
+        MPI_HOME = EFA_HOME
+        NUM_GPUS = task0.num_gpus * args.num_tasks
+        NPER_NODE = task0.num_gpus
 
-    job.tasks[0].join()
-    print(job.tasks[0].output)
+        local_env = format_env_export(LOCAL_RANK='$OMPI_COMM_WORLD_LOCAL_RANK',
+                                      RANK='$OMPI_COMM_WORLD_NODE_RANK',
+                                      WORLD_SIZE='$OMPI_COMM_WORLD_SIZE',
+                                      MASTER_ADDR=task0.ip,
+                                      MASTER_PORT=6016)
+        mpi_env = format_env_x(FI_PROVIDER=FI_PROVIDER,  # Enables running nccl-tests using EFA provider.
+                               FI_OFI_RXR_RX_COPY_UNEXP=1,  #  Disables using bounce buffers for unexpected messages.
+                               I_OFI_RXR_RX_COPY_OOO=1,  # Disables using bounce buffers for out of order messages.
+                               I_EFA_MR_CACHE_ENABLE=1,  # Enables memory region caching.
+                               I_OFI_RXR_INLINE_MR_ENABLE=1,  # Enables inline memory registration of data buffers.
+                               CCL_TREE_THRESHOLD=10 * 4294967296,  # force tree for everything under 40GB
+                               D_LIBRARY_PATH=f'{CUDA_HOME}/lib:{CUDA_HOME}/lib64:{EFA_HOME}/lib64',
+                               NCCL_DEBUG='INFO')
+
+        local_cmd = [f"{local_env} && source activate {args.conda_env} && ",
+                     f'python {worker_script_fn} {worker_params} --local_rank="$LOCAL_RANK"']
+        local_cmd = ' '.join(local_cmd)
+
+        cmd = [f"{MPI_HOME}/bin/mpirun -n {NUM_GPUS} -N {NPER_NODE} --hostfile {HOSTS_SLOTS_FN} ",
+               f'{mpi_env} ',
+               f'--mca btl tcp,self --mca btl_tcp_if_exclude lo,docker0 ',
+#                f'-mca orte_base_help_aggregate 0 ',   # more logging messages
+               f'--bind-to none ',
+               f"bash -c '{local_cmd}'"]
+        cmd = ' '.join(cmd)
+
+        task0.run(cmd, non_blocking=True)
+
+    task0.join()
+    print(task0.output)
 
 
 class SimpleNet(nn.Module):
@@ -253,11 +325,11 @@ def test_optimize():
     log(f"predicted {gradient_size * args.iters / 1e9:.1f}")
 
     log(f"average observed bw: {(recv_bytes1 - recv_bytes) * 8 / elapsed_time / 1e9:.1f} Gbps")
-    
-    time_to_sync_buffer_sec = np.mean(time_list)/1000
-    effective_bw_gbps = gradient_size/time_to_sync_buffer_sec*8/1e9
-    
-    log(f"average effective bw: {effective_bw_gbps} Gbps")
+
+    time_to_sync_buffer_sec = np.mean(time_list) / 1000
+    effective_bw_gbps = gradient_size / time_to_sync_buffer_sec * 8 / 1e9
+
+    log(f"average effective bw: {effective_bw_gbps:0.1f} Gbps")
 
 
 # noinspection PyArgumentList
@@ -330,7 +402,7 @@ def test_allreduce():
 
     # time_to_sync_buffer_sec = np.mean(time_list)/1000
     # effective_bw_gbps = gradient_size/time_to_sync_buffer*8/1e9
-    
+
     # log(f"average effective bw: {effective_bw_gbps} Gbps")
 
 
@@ -339,6 +411,11 @@ def main():
     if args.role == "launcher":
         launcher()
     elif args.role == "worker":
+
+        wandb.init(project='nccl_bench', name='pytorch_bench')
+
+        print(os.environ['RANK'])
+
         np.random.seed(args.seed)
         torch.manual_seed(args.seed)
         if torch.cuda.is_available():
