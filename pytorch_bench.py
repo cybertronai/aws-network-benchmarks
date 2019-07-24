@@ -37,20 +37,20 @@
 
 # with EFA
 
-import wandb
 import argparse
 import os
 import sys
 import time
-import torch.optim as optim
-import torch.distributed as dist
-
-import torch.nn as nn
-from torch.nn.parallel import DistributedDataParallel
+from typing import List
 
 import numpy as np
-
 import torch
+import torch.distributed as dist
+import torch.nn as nn
+import torch.optim as optim
+import wandb
+from ncluster import aws_util as u
+from torch.nn.parallel import DistributedDataParallel
 
 # local imports
 import util
@@ -89,6 +89,12 @@ parser.add_argument('--num_layers', type=int, default=16)
 parser.add_argument('--bucket_cap', type=int, default=25)
 
 parser.add_argument('--use_latest_nccl', action='store_true')
+parser.add_argument('--do_efa', type=int, default=-1,
+                    help="whether to test EFA setup. If left at -1, determined automatically from instance type.")
+parser.add_argument('--internal_config_fn', type=str, default='config_dict',
+                    help='location of filename with extra info to log')
+parser.add_argument('--log_all_workers', type=int, default=0, help='log from each worker instead of just chief')
+parser.add_argument('--no_op', type=int, default=0, help='just print environment/debug info and skip rest')
 
 # worker params
 parser.add_argument('--logdir', type=str, default='/tmp')
@@ -109,6 +115,15 @@ args = parser.parse_args()
 fp16 = True
 HOSTS_SLOTS_FN = 'hosts.slots'
 
+os.environ['WANDB_SILENT'] = 'true'
+
+RANK = os.environ.get('RANK', '0')
+IS_CHIEF = (RANK == '0')
+os.environ['WANDB_SILENT'] = 'true'
+
+
+print(f"{os.uname()[1]} {RANK} {' '.join(sys.argv)}")
+
 
 def _get_nccl_params():
     # from ncluster import aws_util
@@ -121,15 +136,29 @@ def _get_nccl_params():
     return params
 
 
+valid_env_vars = {'LOCAL_RANK', 'RANK', 'WORLD_SIZE', 'MASTER_ADDR', 'MASTER_PORT', 'FI_PROVIDER',
+                  'FI_OFI_RXR_RX_COPY_UNEXP', 'FI_OFI_RXR_RX_COPY_OOO', 'FI_EFA_MR_CACHE_ENABLE',
+                  'FI_OFI_RXR_INLINE_MR_ENABLE', 'NCCL_TREE_THRESHOLD', 'LD_LIBRARY_PATH', 'NCCL_DEBUG',
+                  'OMPI_COMM_WORLD_LOCAL_RANK', 'OMPI_COMM_WORLD_RANK', 'OMPI_COMM_WORLD_SIZE'}
+
+
+def validate_env(l):
+    d = set(l).difference(valid_env_vars)
+    assert len(d) == 0, f"Unknown env vars {d}"
+
+
 def format_env(**d):
     """Converts env var values into variable string, ie
         'var1="val1" var2="val2" '"""
+    validate_env(d.keys())
     args_ = [f'{key}="{d[key]}" ' for key in d]
     return ''.join(args_)
+
 
 def format_env_export(**d):
     """Converts env var values into variable string, ie
         'export var1="val1" && export var2="val2" '"""
+    validate_env(d.keys())
     args_ = [f'export {key}="{d[key]}" ' for key in d]
     return ' && '.join(args_)
 
@@ -137,8 +166,13 @@ def format_env_export(**d):
 def format_env_x(**d):
     """Converts env var values into format suitable for mpirun, ie
         '-x var1="val1" -x var2="val2" '"""
+    validate_env(d.keys())
     args_ = [f'-x {key}="{d[key]}" ' for key in sorted(d)]
     return ''.join(args_)
+
+
+def join(toks: List) -> str:
+    return ' '.join(toks)
 
 
 def launcher():
@@ -157,7 +191,7 @@ def launcher():
     worker_params.remove('--role=launcher')
     worker_params.extend([f'--logdir {job.logdir}'])
 
-    worker_params = ' '.join(worker_params)  # pass through all args
+    worker_params = join(worker_params)  # pass through all args
 
     dist_params0 = (f'--nproc_per_node={args.nproc_per_node} '
                     f'--nnodes={args.num_tasks} '
@@ -167,10 +201,37 @@ def launcher():
     job.rsync('.')
     worker_script_fn = os.path.basename(__file__)  # remote location
 
-    hosts_str, hosts_file_str = util.setup_mpi(job)
+    # choose EFA/no-EFA codepath based on instance-type, overridable by do_efa
+    assert args.do_efa in [-1, 0, 1]
+    if args.do_efa == -1:
+        if u.instance_supports_efa(args.instance_type):
+            args.do_efa = 1
+        else:
+            args.do_efa = 0
+
+    hosts_str, hosts_file_str = util.setup_mpi(job, skip_ssh_setup=args.skip_setup)
     task0.write(HOSTS_SLOTS_FN, hosts_file_str)
 
     job.run(f'killall -9 python || echo skipping && source activate {args.conda_env}')
+
+    config = vars(args)
+
+    CUDA_HOME = f'/usr/local/cuda'
+    EFA_HOME = f'/opt/amazon/efa'
+    MPI_HOME = EFA_HOME
+    NPROC_PER_NODE = args.nproc_per_node
+    assert NPROC_PER_NODE <= task0.num_gpus, f"requested {NPROC_PER_NODE} processes, but only {task0.num_gpus} gpus present"
+    NUM_GPUS = NPROC_PER_NODE * args.num_tasks
+
+    config['NUM_GPUS'] = NUM_GPUS
+
+    pickled_config = util.text_pickle(config)
+    task0.write(args.internal_config_fn, pickled_config)
+
+    if args.do_efa:
+        FI_PROVIDER = 'efa'
+    else:
+        FI_PROVIDER = 'sockets'
 
     if not args.mpirun:
         for i, task in enumerate(job.tasks):
@@ -186,38 +247,33 @@ def launcher():
         # OMPI_COMM_WORLD_RANK
         # OMPI_COMM_WORLD_LOCAL_RANK
         # OMPI_COMM_WORLD_NODE_RANK
-        FI_PROVIDER = 'efa'
-        CUDA_HOME = f'/usr/local/cuda'
-        EFA_HOME = f'/opt/amazon/efa'
-        MPI_HOME = EFA_HOME
-        NUM_GPUS = task0.num_gpus * args.num_tasks
-        NPER_NODE = task0.num_gpus
 
         local_env = format_env_export(LOCAL_RANK='$OMPI_COMM_WORLD_LOCAL_RANK',
-                                      RANK='$OMPI_COMM_WORLD_NODE_RANK',
+                                      RANK='$OMPI_COMM_WORLD_RANK',
                                       WORLD_SIZE='$OMPI_COMM_WORLD_SIZE',
                                       MASTER_ADDR=task0.ip,
                                       MASTER_PORT=6016)
         mpi_env = format_env_x(FI_PROVIDER=FI_PROVIDER,  # Enables running nccl-tests using EFA provider.
                                FI_OFI_RXR_RX_COPY_UNEXP=1,  #  Disables using bounce buffers for unexpected messages.
-                               I_OFI_RXR_RX_COPY_OOO=1,  # Disables using bounce buffers for out of order messages.
-                               I_EFA_MR_CACHE_ENABLE=1,  # Enables memory region caching.
-                               I_OFI_RXR_INLINE_MR_ENABLE=1,  # Enables inline memory registration of data buffers.
-                               CCL_TREE_THRESHOLD=10 * 4294967296,  # force tree for everything under 40GB
-                               D_LIBRARY_PATH=f'{CUDA_HOME}/lib:{CUDA_HOME}/lib64:{EFA_HOME}/lib64',
+                               FI_OFI_RXR_RX_COPY_OOO=1,  # Disables using bounce buffers for out of order messages.
+                               FI_EFA_MR_CACHE_ENABLE=1,  # Enables memory region caching.
+                               FI_OFI_RXR_INLINE_MR_ENABLE=1,  # Enables inline memory registration of data buffers.
+                               NCCL_TREE_THRESHOLD=10 * 4294967296,  # force tree for everything under 40GB
+                               LD_LIBRARY_PATH=f'{CUDA_HOME}/lib:{CUDA_HOME}/lib64:{EFA_HOME}/lib64',
                                NCCL_DEBUG='INFO')
 
+        if args.no_op:
+            worker_script_fn = 'env_test.py'
         local_cmd = [f"{local_env} && source activate {args.conda_env} && ",
                      f'python {worker_script_fn} {worker_params} --local_rank="$LOCAL_RANK"']
-        local_cmd = ' '.join(local_cmd)
+        local_cmd = join(local_cmd)
 
-        cmd = [f"{MPI_HOME}/bin/mpirun -n {NUM_GPUS} -N {NPER_NODE} --hostfile {HOSTS_SLOTS_FN} ",
+        cmd = [f"{MPI_HOME}/bin/mpirun -n {NUM_GPUS} -N {NPROC_PER_NODE} --hostfile {HOSTS_SLOTS_FN} ",
                f'{mpi_env} ',
                f'--mca btl tcp,self --mca btl_tcp_if_exclude lo,docker0 ',
-#                f'-mca orte_base_help_aggregate 0 ',   # more logging messages
                f'--bind-to none ',
                f"bash -c '{local_cmd}'"]
-        cmd = ' '.join(cmd)
+        cmd = join(cmd)
 
         task0.run(cmd, non_blocking=True)
 
@@ -248,6 +304,15 @@ log = None
 # noinspection PyArgumentList
 def test_optimize():
     global log
+
+    def wandb_log(*args_, **kwargs_):
+        if IS_CHIEF:
+            wandb.log(*args_, **kwargs_)
+
+    config = util.text_unpickle(open(args.internal_config_fn).read())
+    config['worker_conda'] = os.path.basename(util.ossystem('echo ${CONDA_PREFIX:-"$(dirname $(which conda))/../"}'))
+    if IS_CHIEF or args.log_all_workers:
+        wandb.config.update(config)
 
     recv_bytes, transmit_bytes = util.network_bytes()
 
@@ -284,7 +349,9 @@ def test_optimize():
     time_list = []
 
     # force initialization of NCCL
+    log("Calling first reduce")
     dist.all_reduce(torch.ones(()).cuda())
+    log("Calling barrier")
     dist.barrier()
 
     log("Start timing")
@@ -311,6 +378,10 @@ def test_optimize():
 
         log('%03d/%d added %d MBs in %.1f ms: %.2f MB/second %.1f' % (
             i, args.iters, size_mb, elapsed_time_ms, rate, loss))
+        
+        wandb_log({'step_time': elapsed_time_ms}, step=i)
+        wandb_log({'algbw': rate/1e3}, step=i)
+        
 
     del time_list[0]  # first measurement is off because of syncing
     min_time = np.min(time_list)
@@ -330,6 +401,9 @@ def test_optimize():
     effective_bw_gbps = gradient_size / time_to_sync_buffer_sec * 8 / 1e9
 
     log(f"average effective bw: {effective_bw_gbps:0.1f} Gbps")
+    log(f"average algbw: {effective_bw_gbps/8:0.1f} GB/s")
+    wandb_log({'avg_algwb': effective_bw_gbps / 8})
+    wandb_log({'gradient_size': gradient_size/1e9})
 
 
 # noinspection PyArgumentList
@@ -411,24 +485,35 @@ def main():
     if args.role == "launcher":
         launcher()
     elif args.role == "worker":
-        if os.environ.get('RANK', '0') == '0':
-            wandb.init(project='nccl_bench', name='pytorch_bench')
-
         np.random.seed(args.seed)
         torch.manual_seed(args.seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(args.seed)
 
-        log = util.FileLogger(args.logdir + f'/worker-{util.get_global_rank()}', mirror=(args.local_rank == 0))
-
+        log = util.FileLogger(args.logdir + f'/worker-{util.get_global_rank()}',
+                              mirror=(IS_CHIEF or args.log_all_workers))
         torch.cuda.set_device(args.local_rank)
-        #      test_p2p()
-        if args.method == 'optimize':
-            test_optimize()
-        elif args.method == 'allreduce':
-            test_allreduce()
+
+        if args.log_all_workers:
+            wandb.init(project='pytorch_bench', name=f'worker-{util.get_global_rank()}', group='test_optimize6')
+
         else:
-            assert False, 'unknown arg'
+            if IS_CHIEF:
+                wandb.init(project='pytorch_bench', name='test_optimize')
+
+        log('==== env vars ====')
+        for v in sorted(valid_env_vars.intersection(os.environ)):
+            log(f"{v}={os.environ[v]}")
+
+        if args.method == 'optimize':
+            if args.no_op:
+                pass
+            else:
+                test_optimize()
+    #        elif args.method == 'allreduce':
+    #            test_allreduce()
+    #        else:
+    #            assert False, 'unknown arg'
     else:
         assert False, "Unknown role " + args.role
 

@@ -100,11 +100,11 @@ def ossystem_with_pipe(cmd: str, out_fn: str = 'output', shell: bool = True):
 
 
 def get_global_rank():
-    return int(os.environ['RANK'])
+    return int(os.environ.get('RANK', '0'))
 
 
 def get_world_size():
-    return int(os.environ['WORLD_SIZE'])
+    return int(os.environ.get('WORLD_SIZE', 1))
 
 
 def network_bytes():
