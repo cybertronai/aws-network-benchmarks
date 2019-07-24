@@ -411,10 +411,8 @@ def main():
     if args.role == "launcher":
         launcher()
     elif args.role == "worker":
-
-        wandb.init(project='nccl_bench', name='pytorch_bench')
-
-        print(os.environ['RANK'])
+        if os.environ.get('RANK', '0') == '0':
+            wandb.init(project='nccl_bench', name='pytorch_bench')
 
         np.random.seed(args.seed)
         torch.manual_seed(args.seed)
