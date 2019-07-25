@@ -52,41 +52,28 @@ import wandb
 from ncluster import aws_util as u
 from torch.nn.parallel import DistributedDataParallel
 
-# local imports
 import util
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--name', type=str, default='big_pair')
+parser.add_argument('--name', type=str, default='big_pair', help="job name")
 parser.add_argument('--seed', type=int, default=1)
 
 parser.add_argument('--instance_type', type=str, default="p3dn.24xlarge")
 parser.add_argument('--num_tasks', type=int, default=2)
-parser.add_argument('--nproc_per_node', type=int, default=8)
-
-# pytorch 1.0.1/2.3.7+cuda10.0
+parser.add_argument('--nproc_per_node', type=int, default=8, help="Processes per machine, must not exceed number of GPUS")
 parser.add_argument('--conda_env', type=str, default='pytorch_p36')
-
-# pytorch latest/2.3.7+cuda10.0
-# parser.add_argument('--conda_env', type=str, default='pytorch_april_nccl237')
-
-# pytorch latest/2.4.6+cuda10.0
-# parser.add_argument('--conda_env', type=str, default='pytorch_april')
-
-
 parser.add_argument('--image_name', type=str, default='Deep Learning AMI (Ubuntu) Version 23.0')
-
-parser.add_argument('--method', type=str, default='optimize')
 
 parser.add_argument('--nospot', action='store_true',
                     help='use regular instead of spot instances')
 
-parser.add_argument('--iters', type=int, default=20,
+parser.add_argument('--iters', type=int, default=40,
                     help='how many iterations')
 parser.add_argument('--skip_setup', action='store_true')
 
 parser.add_argument('--num_rings', type=int, default=16)
 parser.add_argument('--num_layers', type=int, default=16)
-parser.add_argument('--bucket_cap', type=int, default=25)
+parser.add_argument('--bucket_cap_mb', type=int, default=25)
 
 parser.add_argument('--use_latest_nccl', action='store_true')
 parser.add_argument('--do_efa', type=int, default=-1,
@@ -243,7 +230,7 @@ def launcher():
     else:
         # fill in local_rank
         # fill in MASTER_ADDR, MASTER_PORT, WORLD_SIZE
-        # OMPI_COMM_WORLD_SIZE
+        # OMPI_COMM_WORLD_SIZEa
         # OMPI_COMM_WORLD_RANK
         # OMPI_COMM_WORLD_LOCAL_RANK
         # OMPI_COMM_WORLD_NODE_RANK
@@ -331,6 +318,8 @@ def test_optimize():
     gradient_size = args.num_layers * (dim * dim) * bytes_per_number
     size_mb = gradient_size / 1e6
 
+    wandb_log({'gradient_size': gradient_size/1e9})
+
     log('initializing process group')
     dist.init_process_group(backend='nccl',
                             init_method='env://',
@@ -339,7 +328,8 @@ def test_optimize():
     log('calling DDP')
     model = DistributedDataParallel(model,
                                     device_ids=[args.local_rank],
-                                    output_device=args.local_rank)
+                                    output_device=args.local_rank,
+                                    bucket_cap_mb=args.bucket_cap_mb)
     optimizer = optim.SGD(model.parameters(), lr=0.01)
 
     x = torch.eye(dim)
@@ -381,7 +371,6 @@ def test_optimize():
         
         wandb_log({'step_time': elapsed_time_ms}, step=i)
         wandb_log({'algbw': rate/1e3}, step=i)
-        
 
     del time_list[0]  # first measurement is off because of syncing
     min_time = np.min(time_list)
@@ -403,81 +392,6 @@ def test_optimize():
     log(f"average effective bw: {effective_bw_gbps:0.1f} Gbps")
     log(f"average algbw: {effective_bw_gbps/8:0.1f} GB/s")
     wandb_log({'avg_algwb': effective_bw_gbps / 8})
-    wandb_log({'gradient_size': gradient_size/1e9})
-
-
-# noinspection PyArgumentList
-def test_allreduce():
-    pass
-    # global log
-
-    # recv_bytes, transmit_bytes = util.network_bytes()
-
-    # device = 'cuda'
-
-    # dim = 2 ** 12  # multiple of 8, about 67MB matrix in fp32
-
-    # if fp16:
-    #     bytes_per_number = 2
-    # else:
-    #     bytes_per_number = 4
-
-    # gradient_size = args.num_layers * (dim * dim) * bytes_per_number
-    # size_mb = gradient_size / 1e6
-
-    # log('initializing process group')
-    # dist.init_process_group(backend='nccl',
-    #                         init_method='env://',
-    #                         world_size=util.get_world_size())
-
-    # xs = [torch.ones((dim, dim)) for _ in range(args.num_layers)]
-    # xs = [x.to(device) for x in xs]
-    # if fp16:
-    #     xs = [x.half() for x in xs]
-    # time_list = []
-
-    # # force initialization of NCCL
-    # dist.all_reduce(torch.ones(()).cuda())
-    # dist.barrier()
-
-    # log("Start timing")
-    # start_time = time.perf_counter()
-    # start_time0 = start_time
-    # for i in range(args.iters):
-    #     [dist.all_reduce(x, async_op=True) for x in xs]
-
-    #     torch.cuda.synchronize()
-    #     elapsed_time_sec = (time.perf_counter() - start_time)
-    #     start_time = time.perf_counter()
-
-    #     elapsed_time_ms = elapsed_time_sec * 1000
-    #     time_list.append(elapsed_time_ms)
-    #     rate = size_mb / elapsed_time_sec
-
-    #     # could do barrier, but didn't have effect on timing
-    #     # dist.barrier()   
-    #     new_result = xs[0]
-    #     log('%03d/%d added %d MBs in %.1f ms: %.2f MB/second %.1f' % (
-    #         i, args.iters, size_mb, elapsed_time_ms, rate, float(new_result[0, 0])))
-
-    # del time_list[0]  # first measurement is off because of syncing
-    # min_time = np.min(time_list)
-    # median = np.median(time_list)
-    # log(f"min: {min_time:8.2f}, median: {median:8.2f}, mean: {np.mean(time_list):8.2f}")
-
-    # dist.barrier()
-    # elapsed_time = time.perf_counter() - start_time0
-    # recv_bytes1, transmit_bytes1 = util.network_bytes()
-    # log(f"Received {(recv_bytes1 - recv_bytes) / 1e9:.1f}, transmitted {(transmit_bytes1 - transmit_bytes) / 1e9:.1f} "
-    #     f"in {elapsed_time:.1f} seconds")
-    # log(f"predicted {gradient_size * args.iters / 1e9:.1f}")
-
-    # log(f"average observed bw: {(recv_bytes1 - recv_bytes) * 8 / elapsed_time / 1e9:.1f} Gbps")
-
-    # time_to_sync_buffer_sec = np.mean(time_list)/1000
-    # effective_bw_gbps = gradient_size/time_to_sync_buffer*8/1e9
-
-    # log(f"average effective bw: {effective_bw_gbps} Gbps")
 
 
 def main():
@@ -505,15 +419,10 @@ def main():
         for v in sorted(valid_env_vars.intersection(os.environ)):
             log(f"{v}={os.environ[v]}")
 
-        if args.method == 'optimize':
-            if args.no_op:
-                pass
-            else:
-                test_optimize()
-    #        elif args.method == 'allreduce':
-    #            test_allreduce()
-    #        else:
-    #            assert False, 'unknown arg'
+        if args.no_op:
+            pass
+        else:
+            test_optimize()
     else:
         assert False, "Unknown role " + args.role
 
