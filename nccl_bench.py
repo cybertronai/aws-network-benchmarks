@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 """
-Run NCCL all_reduce_perf test on regular or EFA-enabled instances
+Run NCCL all_reduce_perf test on regular or EFA-enabled instances.
+Customized to use image created by prepare_efa_image.py
 
 # usage (Python 3.6)
 pip install -r https://raw.githubusercontent.com/cybertronai/aws-network-benchmarks/master/requirements.txt
@@ -9,7 +10,6 @@ export AWS_ACCESS_KEY_ID=<access key id>
 export AWS_SECRET_ACCESS_KEY=<secret key>
 export AWS_DEFAULT_REGION=us-east-1
 export NCLUSTER_ZONE=us-east-1b
-Save AWS's patch to aws-ofi-nccl package into ~/Downloads/aws-ofi-nccl.patch
 
 Then:
 python nccl_bench.py
@@ -17,9 +17,9 @@ python nccl_bench.py
 
 import argparse
 import os
-import re
 import shlex
 import sys
+import threading
 
 import parse_nccltest_output
 import util
@@ -31,15 +31,12 @@ parser.add_argument('--num_tasks', type=int, default=2, help="number of nodes")
 parser.add_argument('--spot', action='store_true', help='use spot instances')
 parser.add_argument('--skip_setup', action='store_true',
                     help='can use this option on reruns for slightly faster turn-around')
-parser.add_argument('--image_name', type=str, default='dlami23-efa03', help="Image to use for this run. dlami23-efa was image created by taking DLAMI 23 Amazon version, and installing extra packages in https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/efa-start.html")
+parser.add_argument('--image_name', type=str, default='basic-efa01', help="Image to use for this run")
 parser.add_argument('--size_mb', type=int, default=1024, help="largest size of allreduce to test")
-parser.add_argument('--fresh_build', type=int, default=0, help="ignore previously build artifacts and rebuild from scratch")
-parser.add_argument('--skip_build', type=int, default=0, help="do not install anything")
 parser.add_argument('--do_efa', type=int, default=-1, help="whether to test EFA setup. If left at -1, determined automatically from instance type.")
-
-parser.add_argument('--ofi_patch', type=int, default=1, help='whether to apply patch to aws-ofi install')
-parser.add_argument('--ofi_patch_location', type=str, default=os.environ['HOME']+'/Downloads/aws-ofi-nccl.patch', help='location of patch to apply to aws-ofi install')
-parser.add_argument('--nccl_version', type=str, default='2.4.7ms0', help="2.4.6 or 2.4.7 or 2.4.7ms0")
+parser.add_argument('--wandb', type=str, default='', help='suffix for wandb log')
+parser.add_argument('--custom_ring_order', type=int, default=0, help='use custom ring order from https://github.com/NVIDIA/nccl/issues/209#issuecomment-491475792')
+parser.add_argument('--aggregation', type=str, default='tree', choices=('tree', 'ring'), help='aggregation type, ring or tree')
 
 # internal flags
 parser.add_argument('--internal_role', type=str, default='launcher')
@@ -50,7 +47,8 @@ parser.add_argument('--internal_config_fn', type=str, default='config_dict', hel
 
 args = parser.parse_args()
 
-SETUP_COMLETED_FN = 'setup_completed'
+# use script specific marker to determine when to rebuild
+SETUP_COMLETED_FN = util.get_script_name(__file__)+'_setup_completed'
 HOSTS_SLOTS_FN = 'hosts.slots'
 
 
@@ -62,9 +60,9 @@ def launcher():
     job = ncluster.make_job(**vars(args))
     task0 = job.tasks[0]
     job.rsync('.')
-    print('created job3')
-    job.run('killall all_reduce_perf || echo nevermind') # kill previous run
-    job.run('pip install -r worker_requirements.txt')  # things needed for worker()
+    job.run('killall all_reduce_perf || echo nevermind')  # kill previous run
+    #    job.run('pip install -r worker_requirements.txt')     # things needed for worker()
+    #    job.tasks[0].write(SETUP_COMLETED_FN, 'ok')
 
     # choose EFA/no-EFA codepath based on instance-type, overridable by do_efa
     assert args.do_efa in [-1, 0, 1]
@@ -74,69 +72,22 @@ def launcher():
         else:
             args.do_efa = 0
 
-    if args.ofi_patch:
-        assert os.path.exists(args.ofi_patch_location)
-        job.upload(args.ofi_patch_location)
-        config['ofi_patch_fixed'] = True
-    else:
-        config['ofi_patch_fixed'] = False
-        # delete patch file if present from previous run
-        job.run(f'rm -f aws-ofi-nccl.patch')
+    # setup password-less SSH between all pairs of instances
+    hosts_str, hosts_file_str = util.setup_mpi(job, skip_ssh_setup=os.path.exists('/tmp/skip_mpi_setup'))
 
-    # chief task controls whether the rest of tasks get reinitialized
-    if not args.skip_build and (not job.tasks[0].exists(SETUP_COMLETED_FN) or args.fresh_build):
-        # build nccl versions
-        def nccl_build(nccl_version_tag, gitcmd):
-            job.run(f'export NCCL_WIPE_PREVIOUS_BUILD=1')
-            job.run(f'export NCCL_VERSION_TAG="{nccl_version_tag}"')
-            job.run(f'export GIT_CHECKOUT_CMD="{gitcmd}"')
-            #            job.run(f'source ~/parameterized_nccl_build.sh')
-            job.run(f'bash ~/parameterized_nccl_build.sh')
-
-            #        nccl_build('2.3.7', "git checkout v2.3.7-1")
-            #        nccl_build('2.4.6', "git checkout v2.4.6-1")
-            #        nccl_build('2.4.7', "git checkout v2.4.7-1")
-        nccl_build('2.4.7ms0', "git checkout dev/kwen/multi-socket")
-
-        # setup password-less SSH between all pairs of instances
-        public_keys = {}
-        for task in job.tasks:
-            key_fn = '~/.ssh/id_rsa'  # this fn is special, used by default by ssh
-            task.run(f"yes | ssh-keygen -t rsa -f {key_fn} -N ''")
-
-            public_keys[task] = task.read(key_fn + '.pub')
-
-        for task1 in job.tasks:
-            task1.run('echo "StrictHostKeyChecking no" >> /etc/ssh/ssh_config',
-                      sudo=True, non_blocking=True)
-            for task2 in job.tasks:
-                # task1 ->ssh-> task2
-                task2.run(f'echo "{public_keys[task1]}" >> ~/.ssh/authorized_keys',
-                          non_blocking=True)
-        
-        job.tasks[0].write(SETUP_COMLETED_FN, 'ok')
-    else:
-        print(f"{SETUP_COMLETED_FN} found, skipping setup")
-
-    # create arguments for --hosts {host_str} and --hostfile {HOSTS_SLOTS_FN}
-    hosts = [task.ip for task in job.tasks]
-    host_str = ','.join(hosts)
-    hosts_file_lines = [f'{host} slots=8 max-slots=8' for host in hosts]
-    task0.write(HOSTS_SLOTS_FN, '\n'.join(hosts_file_lines))
-
-    CUDA_HOME = f'/usr/local/cuda-10.0'
+    task0.write(HOSTS_SLOTS_FN, hosts_file_str)
+    
+    CUDA_HOME = f'/usr/local/cuda'
     EFA_HOME = f'/opt/amazon/efa'
-    #    MPI_HOME = f'{task0.homedir}/anaconda3'
-    MPI_HOME = EFA_HOME
-    NUM_GPUS = 8*args.num_tasks
-    NPER_NODE = 8
+    NCCL_HOME = f'/usr/local/cuda'
+    BENCHMARK_BIN = f'$HOME/packages/nccl-tests/build/all_reduce_perf'
+    MPI_HOME = EFA_HOME 
+    NUM_GPUS = task0.num_gpus*args.num_tasks
+    NPER_NODE = task0.num_gpus
     SIZE_MB = args.size_mb
 
     config['CUDA_HOME'] = CUDA_HOME
-    config['MPI_HOME'] = MPI_HOME
-    config['NUM_GPUS'] = NUM_GPUS
-    config['NPER_NODE'] = NPER_NODE
-    config['SIZE_MB'] = SIZE_MB
+    config['NCCL_HOME'] = '/usr/local/cuda'
 
     config['do_efa'] = args.do_efa
     config['internal_id'] = u.get_account_number()
@@ -148,71 +99,69 @@ def launcher():
     config['launcher_conda'] = util.ossystem('echo ${CONDA_PREFIX:-"$(dirname $(which conda))/../"}')
     config['launcher_cmd'] = 'python '+' '.join(sys.argv)
     config['num_gpus'] = NUM_GPUS
-    
-    if args.ofi_patch:
-        assert os.path.exists(args.ofi_patch_location), "OFI patch not found at {args.ofi_patch_location}"
-        config['ofi_patch_hash'] = hash(open(args.ofi_patch_location).read())
-    
+    config['wandb_suffix'] = args.wandb
     config.update(vars(args))
 
     if args.do_efa:
         FI_PROVIDER = 'efa'
+
+        # check that ib_uverbs are loaded, and load them if not
+        # Also make sure that EFA provider is available
+
+        def efa_setup(task):
+            task.run('/usr/sbin/lsmod')
+            if 'verbs' not in task.output:
+                task.run('sudo /usr/sbin/modprobe ib_uverbs')
+            task.run('/usr/sbin/lsmod')
+            assert 'verbs' in task.output
+
+            task.run('/opt/amazon/efa/bin/fi_info -p efa')
+            assert 'provider: efa' in task.output
+                
+        util.run_parallel(efa_setup, job.tasks)
+
+        #        for task in job.tasks:
+        #            efa_setup(task)
     else:
-        FI_PROVIDER = 'old'    # this is undefined, so mpirun will fall back to default behavior
+        FI_PROVIDER = 'sockets'    # this is undefined, so mpirun will fall back to default behavior
+
     config['network'] = FI_PROVIDER
-    config['fresh_build'] = args.fresh_build
+    print("Running network test")
     
-    # check that ib_uverbs are loaded, and load them if not
-    # Also make sure that EFA provider is available
-    for task in job.tasks:
-        task.run('/usr/sbin/lsmod')
-        if 'verbs' not in task.output:
-            task.run('sudo /usr/sbin/modprobe ib_uverbs')
-        task.run('/usr/sbin/lsmod')
-        assert 'verbs' in task.output
-
-        task.run('/opt/amazon/efa/bin/fi_info -p efa')
-        assert 'provider: efa' in task.output
-
-    job.tasks[0].write(SETUP_COMLETED_FN, 'ok')  # end of EFA setup
-
-    print("Running EFA test")
-    NCCL_VERSION_TAG = args.nccl_version
-    config['NCCL_VERSION_TAG'] = NCCL_VERSION_TAG
-    FOLDER_ROOT = f"{task0.homedir}/nccl/nccl-{NCCL_VERSION_TAG}"
-    config['FOLDER_ROOT'] = FOLDER_ROOT
-    NCCL_HOME = f'{FOLDER_ROOT}/nccl/build'
-    config['NCCL_HOME'] = NCCL_HOME
-    config['EFA_HOME'] = EFA_HOME
-    job.run(f'export EFA_HOME={EFA_HOME}')
-    job.run(f'export MPI_HOME={MPI_HOME}')
-    job.run(f'export NCCL_HOME={NCCL_HOME}')
-
+    #    job.run(f'export EFA_HOME={EFA_HOME}')
+    #    job.run(f'export MPI_HOME={MPI_HOME}')
+    #    job.run(f'export NCCL_HOME={NCCL_HOME}')
 
     # sanity check, simple mpirun that will print hostnames
-    task0.run(f'{MPI_HOME}/bin/mpirun --host {host_str} hostname')
+    task0.run(f'{MPI_HOME}/bin/mpirun --host {hosts_str} hostname')
 
-    cmd = (f'{MPI_HOME}/bin/mpirun '
-           f' -n {NUM_GPUS} -N {NPER_NODE} --hostfile {HOSTS_SLOTS_FN} '
-           f'-x FI_PROVIDER="{FI_PROVIDER}" '  # Enables running nccl-tests using EFA provider.
-           f'-x FI_OFI_RXR_RX_COPY_UNEXP=1 '  #  Disables using bounce buffers for unexpected messages.
-           f'-x FI_OFI_RXR_RX_COPY_OOO=1 '  # Disables using bounce buffers for out of order messages.
-           f'-x FI_EFA_MR_CACHE_ENABLE=1 '  # Enables memory region caching.
-           f'-x FI_OFI_RXR_INLINE_MR_ENABLE=1 '  # Enables inline memory registration of data buffers.
-           f'-x NCCL_TREE_THRESHOLD=4294967296 '
-           #           f'-x NCCL_TREE_THRESHOLD=0 '  # force ring algorithm
-           #           f'-x CUDA_VISIBLE_DEVICES=0,1,3,2,7,6,4,5 '
-           f'-x LD_LIBRARY_PATH='
-           f'{FOLDER_ROOT}/aws-ofi-nccl/install/lib/:'
-           f'{NCCL_HOME}/lib:'
-           f'{CUDA_HOME}/lib64:'
-           f'{EFA_HOME}/lib64:'
-           f'{MPI_HOME}/lib:$LD_LIBRARY_PATH '  # todo: remove this
-           f'-x NCCL_DEBUG=VERSION '  # print NCCL version config
-           f'--mca btl tcp,self --mca btl_tcp_if_exclude lo,docker0 '
-           f'-mca orte_base_help_aggregate 0 '   # more logging messages
-           f'--bind-to none '
-           f'{FOLDER_ROOT}/nccl-tests/build/all_reduce_perf -b 8 -e {SIZE_MB}M -f 2 -g 1 -c 1 -n 100')
+    threshold = 0
+    if args.aggregation == 'tree':
+        threshold = 10*4294967296   # 40 GB
+
+    env = {'FI_PROVIDER': FI_PROVIDER,      # Enables running nccl-tests using EFA provider.
+           'FI_OFI_RXR_RX_COPY_UNEXP': 1,   #  Disables using bounce buffers for unexpected messages.
+           'FI_OFI_RXR_RX_COPY_OOO': 1,     # Disables using bounce buffers for out of order messages.
+           'FI_EFA_MR_CACHE_ENABLE': 1,     # Enables memory region caching.
+           'FI_OFI_RXR_INLINE_MR_ENABLE': 1,  # Enables inline memory registration of data buffers.
+           'NCCL_TREE_THRESHOLD': threshold,  # switch to rings after this threshold
+           'LD_LIBRARY_PATH': f'{CUDA_HOME}/lib:{CUDA_HOME}/lib64:{EFA_HOME}/lib64',
+           'NCCL_DEBUG': 'INFO'
+           }
+
+    if args.custom_ring_order:
+        env['CUDA_VISIBLE_DEVICES'] = '0,1,3,2,7,6,4,5'
+
+    cmd = [
+        f'{MPI_HOME}/bin/mpirun ',
+        f' -n {NUM_GPUS} -N {NPER_NODE} --hostfile {HOSTS_SLOTS_FN} ',
+        f'{util.format_env(env)} ',
+        f'--mca btl tcp,self --mca btl_tcp_if_exclude lo,docker0 ',
+        f'-mca orte_base_help_aggregate 0 ',   # more logging messages
+        f'--bind-to none ',
+        f'{BENCHMARK_BIN} -b 8 -e {SIZE_MB}M -f 2 -g 1 -c 1 -n 100',
+    ]
+    cmd = ' '.join(cmd)
 
     # assume we didn't change directory from ~
     pickled_config = util.text_pickle(config)
@@ -226,36 +175,32 @@ def worker():
     """Runs benchmark locally on AWS and logs results."""
     
     import wandb
-    
-    # log info propagated from the launcher
+
+    # log config info propagated from the launcher
     config = util.text_unpickle(open(args.internal_config_fn).read())
     config['worker_conda'] = util.ossystem('echo ${CONDA_PREFIX:-"$(dirname $(which conda))/../"}')
 
-    num_gpus = config['num_gpus']
-    patch_str = 'patched' if config['ofi_patch'] else 'stock'
-    if config.get('ofi_patch_fixed', ''):
-        patch_str = 'patchfix'
-    name = f"bench-{num_gpus}-{config['network']}"
+    name = util.get_script_name(__file__)
+    if config['wandb_suffix']:
+        name = name+'-'+config['wandb_suffix']
+
     wandb.init(project='nccl_bench', name=name)
-
-    # record run config parameters
-    print(config)
-    wandb.config.update({})
-    if config:
-        wandb.config.update(config)
-
-    for key in os.environ:
-        if re.match(r"^NCCL|CUDA|PATH|^LD|USER|PWD", key):
-            wandb.config['env_'+key] = os.getenv(key)
-
+    wandb.config.update(config)
+    util.log_environment()
+    
     print("Running command:")
     print(args.internal_cmd)
 
     output_fn = 'output'
     util.ossystem_with_pipe(args.internal_cmd, output_fn)
+    wandb.save(output_fn)
 
-    # # get individual bandwidth numbers
-    duration, alg_bw, bus_bw, avg_bw = parse_nccltest_output.parse(output_fn)
+    # get individual bandwidth numbers
+    output = parse_nccltest_output.parse(output_fn)
+    # duration = output.duration
+    alg_bw = output.alg_bw
+    bus_bw = output.bus_bw
+    avg_bw = output.avg_bw
 
     wandb.log(parse_nccltest_output.make_readable(alg_bw, 'algbw_'))
     wandb.log(parse_nccltest_output.make_readable(bus_bw, 'busbw_'))
