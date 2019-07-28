@@ -8,6 +8,7 @@ jobs:
     docker:
       # specify the version you desire here
       # use `-browsers` prefix for selenium tests, e.g. `3.6.1-browsers`
+      # dlami 23 uses 3.6.5
       - image: circleci/python:3.6.1
 
       # Specify service dependencies here if necessary
@@ -49,6 +50,7 @@ jobs:
           command: |
             . venv/bin/activate
             echo 'hello'
+            python mpi_integration_test.py
 
       - store_artifacts:
           path: test-reports
