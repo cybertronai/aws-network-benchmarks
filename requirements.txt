@@ -1,4 +1,4 @@
-ncluster
+ncluster>=0.1.78
 
 # for optional logging if WANDB_API_KEY is set
 wandb
