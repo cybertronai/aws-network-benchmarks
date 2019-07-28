@@ -19,10 +19,10 @@ import argparse
 import os
 import shlex
 import sys
-import threading
+
+import util
 
 import parse_nccltest_output
-import util
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--name', type=str, default='nccl_bench')
@@ -55,6 +55,7 @@ HOSTS_SLOTS_FN = 'hosts.slots'
 def launcher():
     from ncluster import aws_util as u
     import ncluster
+    import util
 
     config = {}
     job = ncluster.make_job(**vars(args))
@@ -79,7 +80,7 @@ def launcher():
     
     CUDA_HOME = f'/usr/local/cuda'
     EFA_HOME = f'/opt/amazon/efa'
-    NCCL_HOME = f'/usr/local/cuda'
+    # NCCL_HOME = f'/usr/local/cuda'
     BENCHMARK_BIN = f'$HOME/packages/nccl-tests/build/all_reduce_perf'
     MPI_HOME = EFA_HOME 
     NUM_GPUS = task0.num_gpus*args.num_tasks
