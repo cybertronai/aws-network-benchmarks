@@ -10,8 +10,6 @@ import tempfile
 import threading
 from typing import List, Any, Dict, Tuple, Iterable
 
-import ncluster
-
 
 class FileLogger:
     """Helper class to log to file (possibly mirroring to stderr)
@@ -283,7 +281,7 @@ def get_script_name(name):
         return fn
 
 
-def setup_mpi(job: ncluster.Job, skip_ssh_setup=False, max_slots=8) -> Tuple[str, str]:
+def setup_mpi(job, skip_ssh_setup=False, max_slots=8) -> Tuple[str, str]:
     """Sets up passwordless SSH between all tasks in the job.
 
     - Iterates over all tasks, generates private/public keypair if necessary
