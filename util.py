@@ -1,12 +1,16 @@
 import base64
 import os
 import pickle
+import random
 import re
+import string
 import subprocess
 import sys
 import tempfile
 import threading
-from typing import List, Any, Dict, Tuple
+from typing import List, Any, Dict, Tuple, Iterable
+
+import ncluster
 
 
 class FileLogger:
@@ -50,7 +54,7 @@ def ossystem(cmd, shell=True):
     (stdout, stderr) = p.communicate()
     return stdout.decode('ascii')
 
-        
+
 def ossystem2(cmd: str,
               pipe_fn: str = 'output',
               shell: bool = True,
@@ -72,7 +76,7 @@ def ossystem2(cmd: str,
 
     with open(pipe_fn, 'wb') as f:
         process = subprocess.Popen(cmd,
-                                   shell=shell, 
+                                   shell=shell,
                                    stderr=subprocess.STDOUT,
                                    stdout=subprocess.PIPE,
                                    env=env)
@@ -89,7 +93,7 @@ def ossystem_with_pipe(cmd: str, out_fn: str = 'output', shell: bool = True):
     env = os.environ.copy()
     with open(out_fn, 'wb') as f:
         process = subprocess.Popen(cmd,
-                                   shell=shell, 
+                                   shell=shell,
                                    stderr=subprocess.STDOUT,
                                    stdout=subprocess.PIPE,
                                    env=env)
@@ -167,6 +171,7 @@ def parallelize(f, xs: List) -> None:
 # this helper is here in case we later want to capture huge stderr that doesn't fit in RAM
 class TemporaryFileHelper:
     """Provides a way to fetch contents of temporary file."""
+
     def __init__(self, temporary_file):
         self.temporary_file = temporary_file
 
@@ -179,45 +184,45 @@ STDERR = 2
 
 
 class capture_stderr:
-  """Utility to capture output, use as follows
+    """Utility to capture output, use as follows
      with util.capture_stderr() as stderr:
         sess = tf.Session()
     print("Captured:", stderr.getvalue()).
     """
 
-  def __init__(self, fd=STDERR):
-    self.fd = fd
-    self.prevfd = None
+    def __init__(self, fd=STDERR):
+        self.fd = fd
+        self.prevfd = None
 
-  def __enter__(self):
-    t = tempfile.NamedTemporaryFile()
-    self.prevfd = os.dup(self.fd)
-    os.dup2(t.fileno(), self.fd)
-    return TemporaryFileHelper(t)
+    def __enter__(self):
+        t = tempfile.NamedTemporaryFile()
+        self.prevfd = os.dup(self.fd)
+        os.dup2(t.fileno(), self.fd)
+        return TemporaryFileHelper(t)
 
-  def __exit__(self, exc_type, exc_value, traceback):
-    os.dup2(self.prevfd, self.fd)
+    def __exit__(self, exc_type, exc_value, traceback):
+        os.dup2(self.prevfd, self.fd)
 
 
 class capture_stdout:
-  """Utility to capture output, use as follows
+    """Utility to capture output, use as follows
      with util.capture_stdout() as stdout:
         sess = tf.Session()
     print("Captured:", stdout.getvalue()).
     """
 
-  def __init__(self, fd=STDOUT):
-    self.fd = fd
-    self.prevfd = None
+    def __init__(self, fd=STDOUT):
+        self.fd = fd
+        self.prevfd = None
 
-  def __enter__(self):
-    t = tempfile.NamedTemporaryFile()
-    self.prevfd = os.dup(self.fd)
-    os.dup2(t.fileno(), self.fd)
-    return TemporaryFileHelper(t)
+    def __enter__(self):
+        t = tempfile.NamedTemporaryFile()
+        self.prevfd = os.dup(self.fd)
+        os.dup2(t.fileno(), self.fd)
+        return TemporaryFileHelper(t)
 
-  def __exit__(self, exc_type, exc_value, traceback):
-    os.dup2(self.prevfd, self.fd)
+    def __exit__(self, exc_type, exc_value, traceback):
+        os.dup2(self.prevfd, self.fd)
 
 
 def text_pickle(obj) -> str:
@@ -237,35 +242,36 @@ def text_unpickle(pickle_string_encoded: str):
 
 
 def install_pdb_handler():
-  """Automatically start pdb:
+    """Automatically start pdb:
       1. CTRL+\\ breaks into pdb.
       2. pdb gets launched on exception.
   """
 
-  import signal
-  import pdb
+    import signal
+    import pdb
 
-  def handler(_signum, _frame):
-    pdb.set_trace()
-  signal.signal(signal.SIGQUIT, handler)
+    def handler(_signum, _frame):
+        pdb.set_trace()
 
-  # Drop into PDB on exception
-  # from https://stackoverflow.com/questions/13174412
-  def info(type_, value, tb):
-   if hasattr(sys, 'ps1') or not sys.stderr.isatty():
-      # we are in interactive mode or we don't have a tty-like
-      # device, so we call the default hook
-      sys.__excepthook__(type_, value, tb)
-   else:
-      import traceback
-      import pdb
-      # we are NOT in interactive mode, print the exception...
-      traceback.print_exception(type_, value, tb)
-      print()
-      # ...then start the debugger in post-mortem mode.
-      pdb.pm()
+    signal.signal(signal.SIGQUIT, handler)
 
-  sys.excepthook = info
+    # Drop into PDB on exception
+    # from https://stackoverflow.com/questions/13174412
+    def info(type_, value, tb):
+        if hasattr(sys, 'ps1') or not sys.stderr.isatty():
+            # we are in interactive mode or we don't have a tty-like
+            # device, so we call the default hook
+            sys.__excepthook__(type_, value, tb)
+        else:
+            import traceback
+            import pdb
+            # we are NOT in interactive mode, print the exception...
+            traceback.print_exception(type_, value, tb)
+            print()
+            # ...then start the debugger in post-mortem mode.
+            pdb.pm()
+
+    sys.excepthook = info
 
 
 def get_script_name(name):
@@ -277,46 +283,45 @@ def get_script_name(name):
         return fn
 
 
-def setup_mpi(job, skip_ssh_setup=False) -> Tuple[str, str]:
-    """Sets up passwordless SSH between all tasks in the job."""
-    public_keys = {}
+def setup_mpi(job: ncluster.Job, skip_ssh_setup=False, max_slots=8) -> Tuple[str, str]:
+    """Sets up passwordless SSH between all tasks in the job.
+
+    - Iterates over all tasks, generates private/public keypair if necessary
+    - Adds all keypairs for all tasks in job to each task's authorized_keys
+    - Generates arguments appropriate for mpirun --host and --hostfile arguments
+
+    Returns:
+        host_str: string appropriate for --host param
+        hostfile_str: string appropriate for saving into fn and running with --hostfile fn
+    """
+    authorized_keys = []
+    setup_id = random_id()  # dedup collisisions on simultaneous invocations
     if not skip_ssh_setup:
+
+        # create public key on each task if needed and save it
         for task in job.tasks:
             key_fn = '~/.ssh/id_rsa'  # this fn is special, used by default by ssh
-            task.run(f"yes n | ssh-keygen -t rsa -f {key_fn} -N ''")
 
-            public_keys[task] = task.read(key_fn + '.pub')
+            # create default keypair if doesn't exist, ignore keypair exists error
+            task.run(f"yes n | ssh-keygen -t rsa -f {key_fn} -N ''", ignore_errors=True)
+            authorized_keys.append(task.read(key_fn + '.pub'))
+            task.run('echo "StrictHostKeyChecking no" >> /etc/ssh/ssh_config', sudo=True, non_blocking=True)
 
-        keys = {}
-        for i, task1 in enumerate(job.tasks):
-            task1.run('echo "StrictHostKeyChecking no" >> /etc/ssh/ssh_config',
-                      sudo=True, non_blocking=True)
-            for j, task2_ in enumerate(job.tasks):
-                #  task1 ->ssh-> task2
-                #  task2.run(f'echo "{public_keys[task1]}" >> ~/.ssh/authorized_keys',
-                #         non_blocking=True)
-                keys.setdefault(j, []).append(public_keys[task1])
+        def setup_task_mpi(task2):
+            """Save authorized keys. They are too large to pass on command-line, so save them to local file first."""
+            key_str = '\n'.join(authorized_keys)
+            fn = f'/tmp/ncluster_public_keys-{task2.name}-{setup_id}'
+            open(fn, 'w').write(key_str)
+            task2.upload(fn, fn)
+            task2.run(f"""echo `cat {fn}` >> ~/.ssh/authorized_keys""", non_blocking=True)
 
-        def setup_task_mpi(j2):
-            task2 = job.tasks[j2]
-            key_str = '\n'.join(keys[j2])
-            fn = f'/tmp/task-{j2}'
-            with open(fn, 'w') as f:
-                f.write(key_str)
-            task2.upload(fn)
-            task2.run(f"""echo `cat {fn}` >> ~/.ssh/authorized_keys""",
-                      non_blocking=True)
+        run_parallel(setup_task_mpi, job.tasks)
 
-        run_parallel(setup_task_mpi, range(len(job.tasks)))
-        #        for j, task2_ in enumerate(job.tasks):
-        #            setup_task_mpi(j)
-
-    task0 = job.tasks[0]
     hosts = [task.ip for task in job.tasks]
-    hosts_str = ','.join(hosts)
-    hosts_file_lines = [f'{host} slots={task0.num_gpus} max-slots={task0.num_gpus}' for host in hosts]
-    hosts_file_str = '\n'.join(hosts_file_lines)
-    return hosts_str, hosts_file_str
+    host_str = ','.join(hosts)
+    hostfile_lines = [f'{host} slots={max_slots} max-slots={max_slots}' for host in hosts]
+    hostfile_str = '\n'.join(hostfile_lines)
+    return host_str, hostfile_str
 
 
 def extract_fields(obj, fields):
@@ -335,7 +340,7 @@ def extract_ec2_metadata():
         'instance_type': ec2_metadata.instance_type,
         'public_ipv4': ec2_metadata.public_ipv4,
         'private_ipv4': ec2_metadata.private_ipv4
-        }
+    }
 
 
 def format_env(d):
@@ -349,15 +354,21 @@ def log_environment():
     """Logs AWS local machine environment to wandb config."""
     import os
     import wandb
-    
+
     for key in os.environ:
         if re.match(r"^NCCL|CUDA|PATH|^LD|USER|PWD", key):
-            wandb.config['env_'+key] = os.getenv(key)
+            wandb.config['env_' + key] = os.getenv(key)
 
     wandb.config.update(extract_ec2_metadata())
 
-    
-def run_parallel(f, args_):
+
+def random_id(k=5):
+    """Random id to use for AWS identifiers."""
+    #  https://stackoverflow.com/questions/2257441/random-string-generation-with-upper-case-letters-and-digits-in-python
+    return ''.join(random.choices(string.ascii_lowercase + string.digits, k=k))
+
+
+def run_parallel(f, args_: Iterable):
     threads = [threading.Thread(name=f'run_parallel_{i}', target=f, args=[t]) for i, t in enumerate(args_)]
     for thread in threads:
         thread.start()
