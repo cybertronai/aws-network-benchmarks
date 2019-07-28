@@ -7,6 +7,9 @@ import sys
 
 import wandb
 
+# in test environments disable pdb intercept
+os.environ['NCLUSTER_DISABLE_PDB_HANDLER'] = '1'
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--name', type=str, default='mpi_test', help="job name")
 parser.add_argument('--instance_type', type=str, default="c5.large")
