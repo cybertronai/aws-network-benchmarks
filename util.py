@@ -311,7 +311,9 @@ def setup_mpi(job, skip_ssh_setup=False, max_slots=8) -> Tuple[str, str]:
             fn = f'/tmp/ncluster_public_keys-{task2.name}-{setup_id}'
             open(fn, 'w').write(key_str)
             task2.upload(fn, fn)
-            task2.run(f"""echo `cat {fn}` >> ~/.ssh/authorized_keys""", non_blocking=True)
+            # add g-w to fix occasional permission problem with $HOME
+            task2.run(f"""echo `cat {fn}` >> ~/.ssh/authorized_keys && chmod g-w $HOME""", non_blocking=True)
+
 
         run_parallel(setup_task_mpi, job.tasks)
 

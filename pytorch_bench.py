@@ -67,6 +67,7 @@ parser.add_argument('--image_name', type=str, default='Deep Learning AMI (Ubuntu
 parser.add_argument('--nospot', action='store_true',
                     help='use regular instead of spot instances')
 
+
 parser.add_argument('--iters', type=int, default=40,
                     help='how many iterations')
 parser.add_argument('--skip_setup', action='store_true')

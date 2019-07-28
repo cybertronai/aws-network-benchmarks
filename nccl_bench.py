@@ -31,7 +31,7 @@ parser.add_argument('--num_tasks', type=int, default=2, help="number of nodes")
 parser.add_argument('--spot', action='store_true', help='use spot instances')
 parser.add_argument('--skip_setup', action='store_true',
                     help='can use this option on reruns for slightly faster turn-around')
-parser.add_argument('--image_name', type=str, default='amzn-efa03', help="Image to use for this run")
+parser.add_argument('--image_name', type=str, default='amzn-efa04', help="Image to use for this run")
 parser.add_argument('--size_mb', type=int, default=1024, help="largest size of allreduce to test")
 parser.add_argument('--do_efa', type=int, default=-1, help="whether to test EFA setup. If left at -1, determined automatically from instance type.")
 parser.add_argument('--wandb', type=str, default='', help='suffix for wandb log')
@@ -42,7 +42,7 @@ parser.add_argument('--aggregation', type=str, default='tree', choices=('tree', 
 parser.add_argument('--internal_role', type=str, default='launcher')
 parser.add_argument('--internal_cmd', type=str, default='echo whoami')
 parser.add_argument('--internal_config', type=str, default='800358020000007B7D71002E', help='base16 encoded dict of additional config attributes to log')
-parser.add_argument('--internal_config_fn', type=str, default='config_dict', help='location of filename with extra info to log')
+parser.add_argument('--internal_config_fn', type=str, default='ncluster_config_dict', help='location of filename with extra info to log')
 
 
 args = parser.parse_args()
