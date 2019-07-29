@@ -1,17 +1,13 @@
 
 import argparse
 import os
-import random
-import string
 import sys
+import ncluster
 
 import wandb
 
-# in test environments disable pdb intercept
-os.environ['NCLUSTER_RUNNING_UNDER_CIRCLECI'] = '1'
-
 parser = argparse.ArgumentParser()
-parser.add_argument('--name', type=str, default='mpi_test', help="job name")
+parser.add_argument('--name', type=str, default='mpi_integration_test', help="job name")
 parser.add_argument('--instance_type', type=str, default="c5.large")
 parser.add_argument('--num_tasks', type=int, default=2)
 parser.add_argument('--image_name', type=str, default='Deep Learning AMI (Ubuntu) Version 23.0')
@@ -29,14 +25,7 @@ parser.add_argument('--role', type=str, default='launcher',
 args = parser.parse_args()
 
 
-def random_id(k=5):
-    """Random id to use for AWS identifiers."""
-    #  https://stackoverflow.com/questions/2257441/random-string-generation-with-upper-case-letters-and-digits-in-python
-    return ''.join(random.choices(string.ascii_lowercase + string.digits, k=k))
-
-
 def launcher():
-    import ncluster
     import util
     job = ncluster.make_job(**vars(args))
     job.rsync('.')
@@ -46,7 +35,7 @@ def launcher():
     hosts_str, hosts_file_str = util.setup_mpi(job, max_slots=1)
     task0.write('hosts.slots', hosts_file_str)
     script_fn = os.path.basename(__file__)
-    task0.run(f'mpirun -n 2 -N 1 --hostfile hosts.slots python {script_fn} --role=worker --name={args.name}-{random_id()}', stream_output=True)
+    task0.run(f'mpirun -n 2 -N 1 --hostfile hosts.slots python {script_fn} --role=worker --name={args.name}-{util.random_id()}', stream_output=True)
 
 
 def main():
@@ -54,13 +43,15 @@ def main():
         launcher()
     elif args.role == "worker":
         rank = int(os.environ.get('OMPI_COMM_WORLD_LOCAL_RANK', 0))  # ompi way
-        # rank = int(os.environ.get('RANK', '0'))  # pytorch way
-        
+
         if rank != 0:
             os.environ['WANDB_MODE'] = 'dryrun'  # all wandb.log are no-op
-            #        wandb.init(project='aws-network-benchmarks', group=args.name, name='mpi_integration_test', entity='circleci')
         wandb.init(project='aws-network-benchmarks', name=args.name, entity='circleci')
         print(f"{os.uname()[1]} {rank} {' '.join(sys.argv)}")
+
+        if ncluster.running_on_aws():
+            delay_mins = 600
+            os.system(f'sudo shutdown -h -P +{delay_mins}')
 
 
 if __name__ == '__main__':
