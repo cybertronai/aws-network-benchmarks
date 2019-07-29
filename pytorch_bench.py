@@ -62,7 +62,8 @@ parser.add_argument('--instance_type', type=str, default="p3dn.24xlarge")
 parser.add_argument('--num_tasks', type=int, default=2)
 parser.add_argument('--nproc_per_node', type=int, default=8, help="Processes per machine, must not exceed number of GPUS")
 parser.add_argument('--conda_env', type=str, default='pytorch_p36')
-parser.add_argument('--image_name', type=str, default='Deep Learning AMI (Ubuntu) Version 23.0')
+#parser.add_argument('--image_name', type=str, default='Deep Learning AMI (Ubuntu) Version 23.0')
+parser.add_argument('--image_name', type=str, default='amzn-efa04')
 
 parser.add_argument('--nospot', action='store_true',
                     help='use regular instead of spot instances')
@@ -297,7 +298,8 @@ def test_optimize():
         if IS_CHIEF:
             wandb.log(*args_, **kwargs_)
 
-    config = util.text_unpickle(open(args.internal_config_fn).read())
+    if os.path.exists(args.internal_config_fn):
+        config = util.text_unpickle(open(args.internal_config_fn).read())
     config['worker_conda'] = os.path.basename(util.ossystem('echo ${CONDA_PREFIX:-"$(dirname $(which conda))/../"}'))
     if IS_CHIEF or args.log_all_workers:
         wandb.config.update(config)
@@ -409,13 +411,13 @@ def main():
                               mirror=(IS_CHIEF or args.log_all_workers))
         torch.cuda.set_device(args.local_rank)
 
-        if args.log_all_workers:
+        if args.log_all_workers or IS_CHIEF:
             wandb.init(project='pytorch_bench', name=f'worker-{util.get_global_rank()}', group='test_optimize6')
-
         else:
-            if IS_CHIEF:
-                wandb.init(project='pytorch_bench', name='test_optimize')
-
+            if not IS_CHIEF:
+                os.environ['WANDB_MODE'] = 'dryrun'
+            wandb.init(project='pytorch_bench', name='test_optimize')
+ 
         log('==== env vars ====')
         for v in sorted(valid_env_vars.intersection(os.environ)):
             log(f"{v}={os.environ[v]}")

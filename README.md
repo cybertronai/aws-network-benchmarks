@@ -7,6 +7,9 @@ Goal of these benchmarks is to track/identify bottlenecks that prevent efficient
 
 (tested on fresh instance with DLAMI 23)
 ```
+conda create -y -n main python=3.6
+source activate main
+
 git clone https://github.com/cybertronai/aws-network-benchmarks
 cd aws-network-benchmarks
 pip install -r requirements.txt
@@ -20,25 +23,43 @@ export NCLUSTER_ZONE=<some zone that contains p3dn instances>
 
 Note: you can use "ncluster spot_prices p3dn" to see valid p3dn zones
 
-
-python nccl_bench.py --name=test00 --num_tasks=2
 ```
-this launches machines named 0.test00 and 1.test00
+To see if things work with a pair of small machines. This can take up to 10 when running first time on an account as infrastructure is created.
 
-to connect to 0.test00 and see logs
 ```
-ncluster connect 0.test00
+python mpi_test.py
+```
+
+This allocates 2 c5.large machines, sets up mpi between them and runs hostsname. You should see something like this when this works
+
+
+```
+rr>  ip-172-31-10-25 -1 mpi_test.py --role=worker
+rr>  ip-172-31-3-70 -1 mpi_test.py --role=worker
+```
+
+To run nccl-test on p3dn instances, do this
+```
+python nccl_bench.py --num_tasks=2 --name=efatest
+```
+
+this launches machines named `0.efatest` and `1.efatest`
+
+to connect to 0.efatest and see logs
+
+```
+ncluster connect 0.efatest
   or
-ssh ec2-user@<ip of 0.test00> -t tmux a
+ssh ec2-user@<ip of 0.efatest> -t tmux a
 ```
 
-This test runs on image prepared using `prepare_efa_image.py` script. Machines stay up indefinitely, kill using `ncluster kill test00` or through AWS console
+This test runs on image prepared using `prepare_efa_image.py` script. Machines stay up indefinitely, kill using `ncluster kill efatest` or through AWS EC2 console
 
 ## Running PyTorch EFA test
 
 Same as above, but use following:
 ```
-python pytorch_bench.py  --role=launcher --num_tasks=2 --mpirun=1 --do_efa=1 --image_name=amzn-efa03
+python pytorch_bench.py  --role=launcher --num_tasks=2 --mpirun=1 --do_efa=1
 ```
 
 # Older stuff
@@ -103,3 +124,6 @@ Current: 45.5 Gbps
 
 Issues:
 - https://github.com/ray-project/ray/issues/1325
+
+
+
