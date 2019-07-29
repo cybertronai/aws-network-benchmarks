@@ -417,7 +417,7 @@ def main():
             if not IS_CHIEF:
                 os.environ['WANDB_MODE'] = 'dryrun'
             wandb.init(project='pytorch_bench', name='test_optimize')
- 
+
         log('==== env vars ====')
         for v in sorted(valid_env_vars.intersection(os.environ)):
             log(f"{v}={os.environ[v]}")
