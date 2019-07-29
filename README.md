@@ -17,8 +17,7 @@ export AWS_ACCESS_KEY_ID=...
 export AWS_SECRET_ACCESS_KEY=...
 export AWS_DEFAULT_REGION=us-east-1
 
-(optional, to save logs+graphs)
-export WANDB_API_KEY=<your key from https://app.wandb.ai/settings>
+(optional, to save logs+graphs) export WANDB_API_KEY=<your key from https://app.wandb.ai/settings>
 export NCLUSTER_ZONE=<some zone that contains p3dn instances>
 
 Note: you can use "ncluster spot_prices p3dn" to see valid p3dn zones
