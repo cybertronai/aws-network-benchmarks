@@ -27,7 +27,7 @@ args = parser.parse_args()
 
 def launcher():
     import util
-    os.environ['USER'] = f'circleci-{util.random_id()}'  # make random username to create new .pem files
+    os.environ['USER'] = f'circleci_{util.random_id()}'  # make random username to create new .pem files
     job = ncluster.make_job(**vars(args))
     job.rsync('.')
     job.run('pip install -r requirements.txt')
