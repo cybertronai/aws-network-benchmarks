@@ -50,7 +50,6 @@ jobs:
           command: |
             . venv/bin/activate
             echo 'Running mpi_integration_test'
-            export USER=circleci
             export AWS_DEFAULT_REGION=us-east-1
             export NCLUSTER_RUNNING_UNDER_CIRCLECI=1
             python mpi_integration_test.py
