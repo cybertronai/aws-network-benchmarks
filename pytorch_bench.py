@@ -379,9 +379,9 @@ def main():
             wandb.init(project='pytorch_bench', group=args.run_name,
                        name='worker-{util.get_global_rank()}')
         else:
-            wandb.init(project='pytorch_bench', name=args.run_name)
             if not IS_CHIEF:
                 os.environ['WANDB_MODE'] = 'dryrun'
+            wandb.init(project='pytorch_bench', name=args.run_name)
 
         log('==== env vars ====')
         for v in sorted(util.valid_env_vars.intersection(os.environ)):
