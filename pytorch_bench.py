@@ -49,7 +49,6 @@ import torch.distributed as dist
 import torch.nn as nn
 import torch.optim as optim
 import wandb
-from ncluster import aws_util as u
 from torch.nn.parallel import DistributedDataParallel
 
 import util
@@ -63,7 +62,7 @@ parser.add_argument('--num_tasks', type=int, default=2)
 parser.add_argument('--nproc_per_node', type=int, default=8, help="Processes per machine, must not exceed number of GPUS")
 parser.add_argument('--conda_env', type=str, default='pytorch_p36')
 #parser.add_argument('--image_name', type=str, default='Deep Learning AMI (Ubuntu) Version 23.0')
-parser.add_argument('--image_name', type=str, default='amzn-efa04')
+parser.add_argument('--image_name', type=str, default='pytorch-efa00')
 
 parser.add_argument('--nospot', action='store_true',
                     help='use regular instead of spot instances')
@@ -80,7 +79,7 @@ parser.add_argument('--bucket_cap_mb', type=int, default=25)
 parser.add_argument('--use_latest_nccl', action='store_true')
 parser.add_argument('--do_efa', type=int, default=-1,
                     help="whether to test EFA setup. If left at -1, determined automatically from instance type.")
-parser.add_argument('--internal_config_fn', type=str, default='config_dict',
+parser.add_argument('--internal_config_fn', type=str, default='ncluster_config_dict',
                     help='location of filename with extra info to log')
 parser.add_argument('--log_all_workers', type=int, default=0, help='log from each worker instead of just chief')
 parser.add_argument('--no_op', type=int, default=0, help='just print environment/debug info and skip rest')
@@ -128,7 +127,7 @@ def _get_nccl_params():
 valid_env_vars = {'LOCAL_RANK', 'RANK', 'WORLD_SIZE', 'MASTER_ADDR', 'MASTER_PORT', 'FI_PROVIDER',
                   'FI_OFI_RXR_RX_COPY_UNEXP', 'FI_OFI_RXR_RX_COPY_OOO', 'FI_EFA_MR_CACHE_ENABLE',
                   'FI_OFI_RXR_INLINE_MR_ENABLE', 'NCCL_TREE_THRESHOLD', 'LD_LIBRARY_PATH', 'NCCL_DEBUG',
-                  'OMPI_COMM_WORLD_LOCAL_RANK', 'OMPI_COMM_WORLD_RANK', 'OMPI_COMM_WORLD_SIZE'}
+                  'OMPI_COMM_WORLD_LOCAL_RANK', 'OMPI_COMM_WORLD_RANK', 'OMPI_COMM_WORLD_SIZE', 'PATH'}
 
 
 def validate_env(l):
@@ -168,6 +167,8 @@ def launcher():
     # todo: flag for skip setup
 
     import ncluster
+    from ncluster import aws_util as u
+    
     job = ncluster.make_job(**vars(args))
     print(f"Logging to {job.logdir}")
     task0 = job.tasks[0]
@@ -201,7 +202,9 @@ def launcher():
     hosts_str, hosts_file_str = util.setup_mpi(job, skip_ssh_setup=args.skip_setup)
     task0.write(HOSTS_SLOTS_FN, hosts_file_str)
 
-    job.run(f'killall -9 python || echo skipping && source activate {args.conda_env}')
+    #    job.run(f'export PATH=$HOME/anaconda3/bin:$PATH')   # for non-DLAMI image, need to manually add to path
+    job.run('$HOME/anaconda3/bin/conda init bash && source ~/.bashrc')   # when conda not activated
+    job.run(f'killall -9 python || echo skipping && conda activate {args.conda_env}')
 
     config = vars(args)
 
@@ -242,7 +245,8 @@ def launcher():
                                       WORLD_SIZE='$OMPI_COMM_WORLD_SIZE',
                                       MASTER_ADDR=task0.ip,
                                       MASTER_PORT=6016)
-        mpi_env = format_env_x(FI_PROVIDER=FI_PROVIDER,  # Enables running nccl-tests using EFA provider.
+        mpi_env = format_env_x(
+                               FI_PROVIDER=FI_PROVIDER,  # Enables running nccl-tests using EFA provider.
                                FI_OFI_RXR_RX_COPY_UNEXP=1,  #  Disables using bounce buffers for unexpected messages.
                                FI_OFI_RXR_RX_COPY_OOO=1,  # Disables using bounce buffers for out of order messages.
                                FI_EFA_MR_CACHE_ENABLE=1,  # Enables memory region caching.
@@ -253,7 +257,7 @@ def launcher():
 
         if args.no_op:
             worker_script_fn = 'env_test.py'
-        local_cmd = [f"{local_env} && source activate {args.conda_env} && ",
+        local_cmd = [f"{local_env} && source ~/.bashrc && conda activate {args.conda_env} && ",
                      f'python {worker_script_fn} {worker_params} --local_rank="$LOCAL_RANK"']
         local_cmd = join(local_cmd)
 
@@ -300,6 +304,9 @@ def test_optimize():
 
     if os.path.exists(args.internal_config_fn):
         config = util.text_unpickle(open(args.internal_config_fn).read())
+    else:
+        config = {}
+
     config['worker_conda'] = os.path.basename(util.ossystem('echo ${CONDA_PREFIX:-"$(dirname $(which conda))/../"}'))
     if IS_CHIEF or args.log_all_workers:
         wandb.config.update(config)

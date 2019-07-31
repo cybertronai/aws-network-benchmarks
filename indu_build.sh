@@ -1,5 +1,4 @@
 #!/bin/bash
-set -e
 
 if [ -z ${INSTALL_ROOT+x} ]; then
     export INSTALL_ROOT=${HOME}
@@ -114,6 +113,15 @@ git submodule update --init --recursive
 
 export CMAKE_PREFIX_PATH=${CONDA_PREFIX:-"$(dirname $(which conda))/../"}
 python setup.py install
+
+# TODO: install torchvision
+source activate pytorch_p36
+pip uninstall torchvision
+cd $INSTALL_ROOT/packages
+git clone https://github.com/pytorch/vision
+cd vision
+python setup.py install
+
 
 # extra useful packages
 
