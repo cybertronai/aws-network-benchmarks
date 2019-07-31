@@ -3,12 +3,14 @@ import os
 import pickle
 import random
 import re
+import shlex
 import string
 import subprocess
 import sys
 import tempfile
 import threading
 from typing import List, Any, Dict, Tuple, Iterable
+import wandb
 
 
 class FileLogger:
@@ -45,12 +47,15 @@ class FileLogger:
         self.f.close()
 
 
-def ossystem(cmd, shell=True):
+def ossystem(cmd, shell=True) -> str:
     """Like os.system, but returns output of command as string."""
     p = subprocess.Popen(cmd, shell=shell, stdout=subprocess.PIPE,
                          stderr=subprocess.STDOUT)
     (stdout, stderr) = p.communicate()
-    return stdout.decode('ascii')
+    if stdout:
+        return stdout.decode('ascii')
+    else:
+        return ''
 
 
 def ossystem2(cmd: str,
@@ -314,7 +319,6 @@ def setup_mpi(job, skip_ssh_setup=False, max_slots=8) -> Tuple[str, str]:
             # add g-w to fix occasional permission problem with $HOME
             task2.run(f"""echo `cat {fn}` >> ~/.ssh/authorized_keys && chmod g-w $HOME""", non_blocking=True)
 
-
         run_parallel(setup_task_mpi, job.tasks)
 
     hosts = [task.ip for task in job.tasks]
@@ -343,27 +347,83 @@ def extract_ec2_metadata():
     }
 
 
-def format_env(d):
+valid_env_vars = {'LOCAL_RANK', 'RANK', 'WORLD_SIZE', 'MASTER_ADDR', 'MASTER_PORT', 'FI_PROVIDER',
+                  'FI_OFI_RXR_RX_COPY_UNEXP', 'FI_OFI_RXR_RX_COPY_OOO', 'FI_EFA_MR_CACHE_ENABLE',
+                  'FI_OFI_RXR_INLINE_MR_ENABLE', 'NCCL_TREE_THRESHOLD', 'LD_LIBRARY_PATH', 'NCCL_DEBUG',
+                  'OMPI_COMM_WORLD_LOCAL_RANK', 'OMPI_COMM_WORLD_RANK', 'OMPI_COMM_WORLD_SIZE', 'PATH',
+                  'CUDA_VISIBLE_DEVICES'}
+
+
+def validate_env(l):
+    d = set(l).difference(valid_env_vars)
+    assert len(d) == 0, f"Unknown env vars {d}"
+
+
+def format_env(**d):
+    """Converts env var values into variable string, ie
+        'var1="val1" var2="val2" '"""
+    validate_env(d.keys())
+    args_ = [f'{key}="{d[key]}" ' for key in sorted(d)]
+    return ''.join(args_)
+
+
+def format_env_export(**d):
+    """Converts env var values into variable string, ie
+        'export var1="val1" && export var2="val2" '"""
+    validate_env(d.keys())
+    args_ = [f'export {key}="{d[key]}" ' for key in sorted(d)]
+    return ' && '.join(args_)
+
+
+def format_env_x(**d):
     """Converts env var values into format suitable for mpirun, ie
         '-x var1="val1" -x var2="val2" '"""
-    args = [f'-x {key}="{d[key]}" ' for key in sorted(d)]
-    return ''.join(args)
+    validate_env(d.keys())
+    args_ = [f'-x {key}="{d[key]}" ' for key in sorted(d)]
+    return ''.join(args_)
 
 
-def log_environment():
-    """Logs AWS local machine environment to wandb config."""
+def get_conda_bin() -> str:
+    return ossystem('echo ${CONDA_PREFIX:-"$(dirname $(which conda))/../"}')
+
+
+# log info to wandb for client and worker, see
+# https://github.com/wandb/client/issues/452#issuecomment-516075588
+def log_client_environment(config: Dict):
+    """Log AWS client enironment."""
+
+    from ncluster import aws_util as u
+    config['cmd'] = ' '.join(sys.argv)
+    config['internal_alias'] = u.get_account_name()
+    config['internal_id'] = u.get_account_number()
+    config['launch_user'] = os.environ.get('USER', '')
+    config['launcher_cmd'] = ' '.join([shlex.quote(s) for s in sys.argv])
+    config['client_conda'] = os.path.basename(get_conda_bin())
+    config['region'] = u.get_region()
+    config['zone'] = u.get_zone()
+
+    config['client_cmd'] = ' '.join([shlex.quote(s) for s in sys.argv])
+
+
+def log_worker_environment(config=None) -> None:
+    """Logs AWS worker environment."""
     import os
-    import wandb
+
+    if config is None:
+        config = wandb.config
+        assert config is not None, "Trying to log to wandb before initializing"
 
     for key in os.environ:
         if re.match(r"^NCCL|CUDA|PATH|^LD|USER|PWD", key):
             wandb.config['env_' + key] = os.getenv(key)
 
-    wandb.config.update(extract_ec2_metadata())
+    config['worker_conda'] = os.path.basename(get_conda_bin())
+    config['worker_cmd'] = ' '.join([shlex.quote(s) for s in sys.argv])
+
+    config.update(extract_ec2_metadata())
 
 
-def random_id(k=5):
-    """Random id to use for AWS identifiers."""
+def random_id(k=3):
     #  https://stackoverflow.com/questions/2257441/random-string-generation-with-upper-case-letters-and-digits-in-python
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=k))
 

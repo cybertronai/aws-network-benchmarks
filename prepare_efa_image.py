@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """
 
-Script that builds EFA-enable image (see nccl_parameterized_build.sh)
+Script that builds EFA-enable image. It wraps indu_build.sh with extra logging. Because Python is needed for logging, conda env setup is duplicated here and in indu_build.sh
 
 # usage (Python 3.6)
 pip install -r https://raw.githubusercontent.com/cybertronai/aws-network-benchmarks/master/requirements.txt
@@ -14,65 +14,54 @@ export NCLUSTER_ZONE=us-east-1b
 
 import argparse
 import os
-import re
 import shlex
 import sys
+
+import wandb
 
 import util
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--name', type=str, default='prepare-image')
-parser.add_argument('--instance_type', type=str, default="c5.18xlarge")
-#  parser.add_argument('--instance_type', type=str, default="p3dn.24xlarge")
-parser.add_argument('--num_tasks', type=int, default=1, help="number of nodes")
+parser.add_argument('--name', type=str, default='0.prepare_efa_image')
+parser.add_argument('--instance_type', type=str, default="p3dn.24xlarge")
 parser.add_argument('--spot', action='store_true', help='use spot instances')
 parser.add_argument('--skip_setup', action='store_true',
                     help='can use this option on reruns for slightly faster turn-around')
-parser.add_argument('--image_name', type=str, default='amzn2-ami-hvm-2.0.20190612-x86_64-gp2')
+parser.add_argument('--image_name', type=str, default='amzn2-ami-hvm-2.0.20190612-x86_64-gp2',
+                    help='base image to build upon')
+parser.add_argument('--use_tmpfs', type=int, default=0, help='use tmpfs for slightly faster build')
+parser.add_argument('--use_io2', type=int, default=1, help='use io2 disk for faster building')
 
 # internal flags
 parser.add_argument('--internal_role', type=str, default='launcher')
 parser.add_argument('--internal_cmd', type=str, default='echo whoami')
-parser.add_argument('--internal_config', type=str, default='800358020000007B7D71002E', help='base16 encoded dict of additional config attributes to log')
-parser.add_argument('--internal_config_fn', type=str, default='config_dict', help='location of filename with extra info to log')
-parser.add_argument('--ofi_patch_location', type=str, default='')
+parser.add_argument('--internal_config', type=str, default='800358020000007B7D71002E', help='base64 encoded dict of additional config attributes to log')
+parser.add_argument('--internal_config_fn', type=str, default='ncluster_config_dict', help='location of filename with extra info to log')
+args = parser.parse_args()
 
 SETUP_COMPLETED_FN = 'ncluster_setup_completed'
 
-args = parser.parse_args()
-
 
 def launcher():
-    from ncluster import aws_util as u
     import ncluster
 
-    config = {}
-    config = vars(args)
-    config['disk_size'] = 500
-    os.environ['NCLUSTER_AWS_FAST_ROOTDISK'] = '1'
+    config = vars(args)  # save command-line args
+    util.log_client_environment(config)
+
+    if args.use_io2:
+        os.environ['NCLUSTER_AWS_FAST_ROOTDISK'] = '1'
     os.environ['WANDB_SILENT'] = '1'
     task0 = ncluster.make_task(**config)
     task0.rsync('.')
 
-    config['internal_id'] = u.get_account_number()
-    config['internal_alias'] = u.get_account_name()
-    config['region'] = u.get_region()
-    config['zone'] = u.get_zone()
-    config['launch_user'] = os.environ.get('USER', '')
-    config['launcher_cmd'] = ' '.join([shlex.quote(s) for s in sys.argv])
-
-    
-    if os.path.exists(args.ofi_patch_location):
-        task0.upload(args.ofi_patch_location)
-
     pickled_config = util.text_pickle(config)
     task0.write(args.internal_config_fn, pickled_config)
 
-    # make things faster by installing into tmpfs
+    INSTALL_ROOT = '/home/ec2-user'
+    if args.use_tmpfs:
+        task0.run('sudo mkdir -p /tmpfs && sudo chown `whoami` /tmpfs && sudo mount -t tmpfs -o size=50G tmpfs /tmpfs')
+        INSTALL_ROOT = '/tmpfs'
 
-    INSTALL_ROOT='/home/ec2-user'
-    #    task0.run('sudo mkdir -p /tmpfs && sudo chown `whoami` /tmpfs && sudo mount -t tmpfs -o size=50G tmpfs /tmpfs')
-    #    INSTALL_ROOT='/tmpfs'
     task0.run(f'export INSTALL_ROOT={INSTALL_ROOT}')
     task0.run(f'export WANDB_SILENT=1')
     
@@ -90,41 +79,28 @@ def launcher():
     task0.run(f'popd')
 
     task0.run('pip install -r worker_requirements.txt')
-    task0.run(f'python {__file__} --internal_role=worker')
+
+    this_script = os.path.basename(__file__)
+    task0.run(f'python {this_script} --internal_role=worker')
+    if args.use_tmpfs:
+        task0.run(f'cp -R {INSTALL_ROOT} ~/install_root')
 
 
 def worker():
-    """Runs benchmark locally on AWS and logs results."""
-    
+    name = util.get_script_name(__file__)
+    wandb.init(project='nccl_bench', name=name)
     util.install_pdb_handler()
-    
+
     # log info propagated from the launcher
     config = util.text_unpickle(open(args.internal_config_fn).read())
-    config['worker_conda'] = util.ossystem('echo ${CONDA_PREFIX:-"$(dirname $(which conda))/../"}')
-    config['worker_cmd'] = ' '.join([shlex.quote(s) for s in sys.argv])
-    name = f"prepare_efa_image"
 
     print(config)
-    
-    import wandb
-    # let environment variables override project/run name
-    project = None if 'WANDB_ENTITY' in os.environ else 'nccl_bench'
-    name = None if 'WANDB_DESCRIPTION' in os.environ else util.get_script_name(__file__)
-    wandb.init(project=project, name=name)
-    
     wandb.config.update(config)
-    if config:
-        wandb.config.update(config)
 
-    for key in os.environ:
-        if re.match(r"^NCCL|CUDA|PATH|^LD|USER|PWD", key):
-            wandb.config['env_'+key] = os.getenv(key)
-
+    util.log_worker_environment()
     util.ossystem2(f'bash indu_build.sh')
 
-
-    with open(SETUP_COMPLETED_FN, 'w') as f:
-        f.write('ok')
+    open(SETUP_COMPLETED_FN, 'w').write('ok')
 
 
 def main():
