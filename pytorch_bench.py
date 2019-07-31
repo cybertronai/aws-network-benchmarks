@@ -89,14 +89,13 @@ parser.add_argument('--run_name', type=str, default='pytorch_bench')
 # distributed params
 # TODO: rename worker to launcher
 parser.add_argument('--role', type=str, default='launcher',
+                    choices=('launcher', 'worker'),
                     help='internal flag, launcher or worker')
 parser.add_argument('--local_rank', default=0, type=int)
 parser.add_argument('--master_addr', type=str, default='127.0.0.1',
                     help='address of master node')
 parser.add_argument('--master_port', type=int, default=-1,
                     help='port of master node')
-parser.add_argument('--mpirun', type=int, default=0,
-                    help='use mpirun instead of pytorch launcher')
 args = parser.parse_args()
 
 fp16 = True
@@ -111,17 +110,6 @@ os.environ['WANDB_SILENT'] = 'true'
 print(f"{os.uname()[1]} {RANK} {' '.join(sys.argv)}")
 
 
-def _get_nccl_env():
-    # from ncluster import aws_util
-    params = f'NCCL_DEBUG=VERSION '
-    if args.num_tasks > 1:
-        params += f'NCCL_MIN_NRINGS={args.num_rings} NCCL_MAX_NRINGS={args.num_rings} '
-    #    if aws_util.instance_supports_100gbps_network(args.instance_type):
-    #        params += f'NCCL_SOCKET_IFNAME=ens5 '
-
-    return params
-
-
 def launcher():
     import ncluster
     from ncluster import aws_util as u
@@ -129,8 +117,6 @@ def launcher():
     job = ncluster.make_job(**vars(args))
     print(f"Logging to {job.logdir}")
     task0 = job.tasks[0]
-
-    nccl_args = _get_nccl_env()
 
     worker_args = [arg for arg in sys.argv[1:] if not arg.startswith('--role')]
     worker_args.append('--role=worker')
@@ -182,7 +168,11 @@ def launcher():
     else:
         FI_PROVIDER = 'sockets'
 
-    if not args.mpirun:
+    if not args.do_efa:
+        nccl_args = f'NCCL_DEBUG=INFO '
+        if args.num_tasks > 1:
+            nccl_args += f'NCCL_MIN_NRINGS={args.num_rings} NCCL_MAX_NRINGS={args.num_rings} '
+
         for i, task in enumerate(job.tasks):
             dist_args = dist_args0 + f'--node_rank={i} '
             cmd = (f'{nccl_args} python -m torch.distributed.launch {dist_args} {worker_script_fn} '
