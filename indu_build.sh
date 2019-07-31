@@ -1,60 +1,82 @@
+#!/bin/bash
+set -e
+
+if [ -z ${INSTALL_ROOT+x} ]; then
+    export INSTALL_ROOT=${HOME}
+    echo "using default install root $INSTALL_ROOT"
+else
+    echo "using custom install root $INSTALL_ROOT"
+fi
+
 sudo yum update -y
+sudo yum install -y htop
 sudo yum groupinstall "Development Tools" -y
 
-mkdir ~/packages
-cd ~/packages
-wget https://s3-us-west-2.amazonaws.com/aws-efa-installer/aws-efa-installer-latest.tar.gz
-tar -xf aws-efa-installer-latest.tar.gz
+mkdir -p $INSTALL_ROOT/packages
+cd $INSTALL_ROOT/packages
+
+# sometime after 1.3.0, mpicc path changed from amazon/efa to amazon/openmpi
+# export EFA_INSTALLER_FN=aws-efa-installer-latest.tar.gz
+export EFA_INSTALLER_FN=aws-efa-installer-1.3.0.tar.gz
+wget https://s3-us-west-2.amazonaws.com/aws-efa-installer/$EFA_INSTALLER_FN
+tar -xf $EFA_INSTALLER_FN
 cd aws-efa-installer
 sudo ./efa_installer.sh -y
 # sudo reboot  # doesn't seem needed
 
-cd ~/packages
+cd $INSTALL_ROOT/packages
 wget http://us.download.nvidia.com/tesla/418.40.04/NVIDIA-Linux-x86_64-418.40.04.run
-sudo bash NVIDIA-Linux-x86_64-418.40.04.run --no-drm --disable-nouveau --dkms --silent --install-libglvnd
+sudo bash NVIDIA-Linux-x86_64-418.40.04.run --no-drm --disable-nouveau --dkms --silent --install-libglvnd || echo "already loaded"
 
-cd ~/packages
+cd $INSTALL_ROOT/packages
 wget https://developer.nvidia.com/compute/cuda/10.0/Prod/local_installers/cuda_10.0.130_410.48_linux
 chmod +x cuda_10.0.130_410.48_linux
 sudo ./cuda_10.0.130_410.48_linux --silent --override --toolkit --samples --no-opengl-libs
 
-cd ~/packages
-git clone https://github.com/NVIDIA/nccl.git
+echo 'building nccl'
+cd $INSTALL_ROOT/packages
+git clone https://github.com/NVIDIA/nccl.git || echo ignored
 cd nccl
-git checkout dev/kwen/multi-socket
+git checkout v2.4.8-1
 make -j src.build
 make pkg.txz.build
 cd build/pkg/txz
-tar xvfJ nccl_2.4.7ms1-1+cuda10.0_x86_64.txz
-sudo cp -r nccl_2.4.7ms1-1+cuda10.0_x86_64/* /usr/local/cuda-10.0/
+tar xvfJ nccl_2.4.8-1+cuda10.0_x86_64.txz
+sudo cp -r nccl_2.4.8-1+cuda10.0_x86_64/* /usr/local/cuda-10.0/
 
-cd ~/packages
+echo 'building aws-ofi-nccl'
+cd $INSTALL_ROOT/packages
 git clone https://github.com/aws/aws-ofi-nccl.git || echo exists
 cd aws-ofi-nccl
-wget https://s3.amazonaws.com/yaroslavvb2/data/aws-ofi-nccl.patch
-patch -p1 < aws-ofi-nccl.patch
-
+git checkout aws
 ./autogen.sh
-./configure --prefix=/usr --with-mpi=/opt/amazon/efa --with-libfabric=/opt/amazon/efa/ --with-cuda=/usr/local/cuda --with-nccl=/usr/local/cuda
+
+./configure --prefix=/usr --with-mpi=/opt/amazon/efa --with-libfabric=/opt/amazon/efa/ --with-cuda=/usr/local/cuda --with-nccl=/usr/local/cuda/nccl_2.4.8-1+cuda10.0_x86_64
+
 sudo yum install libudev-devel -y
-LDFLAGS="-L/opt/amazon/efa/lib64" make MPI=1 MPI_HOME=/opt/amazon/efa/ CUDA_HOME=/usr/local/cuda NCCL_HOME=/usr/local/cuda
+PATH=/opt/amazon/efa/bin:$PATH LDFLAGS="-L/opt/amazon/efa/lib64" make MPI=1 MPI_HOME=/opt/amazon/efa/ CUDA_HOME=/usr/local/cuda NCCL_HOME=/usr/local/cuda
 sudo make install
 
-cd ~/packages
+echo 'installing cuda'
+cd $INSTALL_ROOT/packages
 wget https://s3.amazonaws.com/yaroslavvb2/data/cudnn-10.0-linux-x64-v7.6.0.64.tgz
+echo '***' tar zxvf cudnn-10.0-linux-x64-v7.6.0.64.tgz
 tar zxvf cudnn-10.0-linux-x64-v7.6.0.64.tgz
+echo '***' sudo cp -r cuda/* /usr/local/cuda-10.0
 sudo cp -r cuda/* /usr/local/cuda-10.0
 
+echo 'installing bazel'
 sudo update-alternatives --set gcc "/usr/bin/gcc48"
 sudo update-alternatives --set g++ "/usr/bin/g++48"
 
-cd ~/packages
+cd $INSTALL_ROOT/packages
+echo 'downloading bazel'
 wget https://github.com/bazelbuild/bazel/releases/download/0.20.0/bazel-0.20.0-installer-linux-x86_64.sh
 sudo bash bazel-0.20.0-installer-linux-x86_64.sh
 
-cd ~/packages
-wget https://repo.anaconda.com/archive/Anaconda3-2019.03-Linux-x86_64.sh
-bash Anaconda3-2019.03-Linux-x86_64.sh -b
+# cd $INSTALL_ROOT/packages
+# wget https://repo.anaconda.com/archive/Anaconda3-2019.03-Linux-x86_64.sh
+# bash Anaconda3-2019.03-Linux-x86_64.sh -b
 
 sudo sh -c 'echo "/opt/amazon/efa/lib64/" > mpi.conf'
 sudo sh -c 'echo "/usr/local/cuda/lib/" > nccl.conf'
@@ -62,33 +84,28 @@ sudo sh -c 'echo "/usr/local/cuda/lib64/" > cuda.conf'
 sudo ldconfig
 
 cd /usr/local/lib
+sudo rm -f ./libmpi.so
 sudo ln -s /opt/amazon/efa/lib64/libmpi.so ./libmpi.so
 
-cd ~/packages
-git clone https://github.com/NVIDIA/nccl-tests.git
+
+echo 'installing NCCL'
+
+cd $INSTALL_ROOT/packages
+git clone https://github.com/NVIDIA/nccl-tests.git || echo ignored
 cd nccl-tests
-make MPI=1 MPI_HOME=/opt/amazon/efa/ CUDA_HOME=/usr/local/cuda NCCL_HOME=/usr/local/cuda
-
-# test all_reduce_perf
-export CUDA_HOME=/usr/local/cuda
-export EFA_HOME=/opt/amazon/efa
-bin=$HOME/packages/nccl-tests/build/all_reduce_perf
-LD_LIBRARY_PATH=$CUDA_HOME/lib:$CUDA_HOME/lib64:$EFA_HOME/lib64 $bin -b 8 -e 8
-
-# test MPI EFA
-/opt/amazon/efa/bin/mpirun -n 8 -x NCCL_DEBUG=INFO -x FI_PROVIDER=efa -x LD_LIBRARY_PATH=$CUDA_HOME/lib:$CUDA_HOME/lib64:$EFA_HOME/lib64 $bin -b 8 -e 8
-
+make MPI=1 MPI_HOME=/opt/amazon/efa CUDA_HOME=/usr/local/cuda NCCL_HOME=/usr/local/cuda
 
 # build pytorch, follow https://github.com/pytorch/pytorch#from-source
 
-export PATH=$HOME/anaconda3/bin:$PATH
+# export PATH=$HOME/anaconda3/bin:$PATH
 conda create -n pytorch_p36 python=3.6 -y
-source activate pytorch_p36
+conda activate pytorch_p36
 
 conda install numpy ninja pyyaml mkl mkl-include setuptools cmake cffi typing -y
 conda install -c pytorch magma-cuda100 -y
 
-cd ~/packages
+cd $INSTALL_ROOT/packages
+export USE_SYSTEM_NCCL=1
 git clone --recursive https://github.com/pytorch/pytorch
 cd pytorch
 git checkout v1.1.0
@@ -109,3 +126,12 @@ sudo yum install -y htop
 sudo yum install -y gdb
 sudo yum install -y tmux
 sudo yum install -y emacs
+
+# test all_reduce_perf
+export CUDA_HOME=/usr/local/cuda
+export EFA_HOME=/opt/amazon/efa
+bin=$INSTALL_ROOT/packages/nccl-tests/build/all_reduce_perf
+LD_LIBRARY_PATH=$CUDA_HOME/lib:$CUDA_HOME/lib64:$EFA_HOME/lib64 $bin -b 8 -e 8
+
+# test MPI EFA
+/opt/amazon/efa/bin/mpirun -n 8 -x NCCL_DEBUG=INFO -x FI_PROVIDER=efa -x LD_LIBRARY_PATH=$CUDA_HOME/lib:$CUDA_HOME/lib64:$EFA_HOME/lib64 $bin -b 8 -e 8

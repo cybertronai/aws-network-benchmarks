@@ -23,12 +23,11 @@ import util
 parser = argparse.ArgumentParser()
 parser.add_argument('--name', type=str, default='prepare-image')
 parser.add_argument('--instance_type', type=str, default="c5.18xlarge")
-#parser.add_argument('--instance_type', type=str, default="p3dn.24xlarge")
+#  parser.add_argument('--instance_type', type=str, default="p3dn.24xlarge")
 parser.add_argument('--num_tasks', type=int, default=1, help="number of nodes")
 parser.add_argument('--spot', action='store_true', help='use spot instances')
 parser.add_argument('--skip_setup', action='store_true',
                     help='can use this option on reruns for slightly faster turn-around')
-# parser.add_argument('--image_name', type=str, default="Deep Learning AMI (Amazon Linux) Version 23.0")
 parser.add_argument('--image_name', type=str, default='amzn2-ami-hvm-2.0.20190612-x86_64-gp2')
 
 # internal flags
@@ -38,7 +37,7 @@ parser.add_argument('--internal_config', type=str, default='800358020000007B7D71
 parser.add_argument('--internal_config_fn', type=str, default='config_dict', help='location of filename with extra info to log')
 parser.add_argument('--ofi_patch_location', type=str, default='')
 
-SETUP_COMPLETED_FN = 'setup_completed'
+SETUP_COMPLETED_FN = 'ncluster_setup_completed'
 
 args = parser.parse_args()
 
@@ -50,6 +49,8 @@ def launcher():
     config = {}
     config = vars(args)
     config['disk_size'] = 500
+    os.environ['NCLUSTER_AWS_FAST_ROOTDISK'] = '1'
+    os.environ['WANDB_SILENT'] = '1'
     task0 = ncluster.make_task(**config)
     task0.rsync('.')
 
@@ -67,24 +68,28 @@ def launcher():
     pickled_config = util.text_pickle(config)
     task0.write(args.internal_config_fn, pickled_config)
 
-    # task0.run('pip install -r worker_requirements.txt')  # things needed for worker()
+    # make things faster by installing into tmpfs
 
-    # install conda
-    task0.run('mkdir -p ~/packages')
-    task0.run('cd ~/packages')
+    INSTALL_ROOT='/home/ec2-user'
+    #    task0.run('sudo mkdir -p /tmpfs && sudo chown `whoami` /tmpfs && sudo mount -t tmpfs -o size=50G tmpfs /tmpfs')
+    #    INSTALL_ROOT='/tmpfs'
+    task0.run(f'export INSTALL_ROOT={INSTALL_ROOT}')
+    task0.run(f'export WANDB_SILENT=1')
+    
+    task0.run(f'mkdir -p {INSTALL_ROOT}/packages')
+    task0.run(f'pushd {INSTALL_ROOT}/packages')
     task0.run('sudo yum groupinstall "Development Tools" -y')
     task0.run('sudo update-alternatives --set gcc "/usr/bin/gcc48" || echo ignored')
     task0.run('sudo update-alternatives --set g++ "/usr/bin/g++48" || echo ignored')
     
     task0.run('wget https://repo.anaconda.com/archive/Anaconda3-2019.03-Linux-x86_64.sh')
     task0.run('bash Anaconda3-2019.03-Linux-x86_64.sh -b || echo ignore')
-    task0.run('export PATH=$HOME/anaconda3/bin:$PATH')
+    task0.run('/home/ec2-user/anaconda3/bin/conda init bash && source ~/.bashrc')
     task0.run('conda create -n pytorch_p36 python=3.6 -y || echo ignore')
     task0.run('source activate pytorch_p36')
-    task0.run('cd ~')
+    task0.run(f'popd')
 
-    task0.run('pip install -r worker_requirements.txt --ignore-installed') # get around dlami requiring older version of pyyaml
-
+    task0.run('pip install -r worker_requirements.txt')
     task0.run(f'python {__file__} --internal_role=worker')
 
 
@@ -93,11 +98,9 @@ def worker():
     
     util.install_pdb_handler()
     
-    
     # log info propagated from the launcher
     config = util.text_unpickle(open(args.internal_config_fn).read())
     config['worker_conda'] = util.ossystem('echo ${CONDA_PREFIX:-"$(dirname $(which conda))/../"}')
-
     config['worker_cmd'] = ' '.join([shlex.quote(s) for s in sys.argv])
     name = f"prepare_efa_image"
 
