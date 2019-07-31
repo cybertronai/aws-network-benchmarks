@@ -60,7 +60,7 @@ def parse(fn) -> NcclTestOuput:
             continue
 
         if regex.match(line):
-            avg_bw = float(regex.findall(line)[0]) * 8
+            avg_bw = float(regex.findall(line)[0])
 
         if line.startswith('#') or len(toks) != 12:
             continue
@@ -74,8 +74,8 @@ def parse(fn) -> NcclTestOuput:
             continue
 
         duration[size] = float(toks[8])
-        alg_bw[size] = float(toks[9]) * 8
-        bus_bw[size] = float(toks[10]) * 8
+        alg_bw[size] = float(toks[9])
+        bus_bw[size] = float(toks[10])
 
     return NcclTestOuput(duration, alg_bw, bus_bw, avg_bw)
 
